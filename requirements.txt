@@ -1,0 +1,10 @@
+pandas
+numpy
+ta
+joblib
+catboost
+scikit-learn
+tqdm
+matplotlib
+tabulate
+argparse
