@@ -20,13 +20,13 @@ This submodule is responsible for:
 # From preprocessor.py (original preprocess_features.py)
 from .preprocessor import (
     main_preprocess_logic,
-    load_candles_from_db_for_features, # Exposing for potential reuse
+    # load_candles_from_db_for_features, # Exposing for potential reuse
     compute_and_prepare_features       # Exposing for potential reuse
 )
 
 __all__ = [
     "main_preprocess_logic",
-    "load_candles_from_db_for_features",
+    # "load_candles_from_db_for_features",
     "compute_and_prepare_features",
     # "preprocess_all_csv_features", # If exposed from builder
 ]
