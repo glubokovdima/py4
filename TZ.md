@@ -20,7 +20,7 @@
      * Целевые переменные:
 
        * `target_class` (UP/DOWN)
-       * `delta`, `volatility`
+       * `delta`, `volatility` 
        * `target_tp_hit` (если `delta > 0.005`)
 
 3. **Обучение моделей** (`train_model.py`)
