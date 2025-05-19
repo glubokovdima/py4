@@ -1,0 +1,7 @@
+.idea
+catboost_info
+data
+database
+logs
+models
+merged.txt
