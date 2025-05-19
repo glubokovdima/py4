@@ -132,7 +132,7 @@ def compute_final_delta(delta_model, delta_history, sigma_history):
     # Пример: вес истории = 1 / sigma_history, вес модели = константа
     # Нормализация весов: w_hist = (1/sigma_history) / ((1/sigma_history) + C), w_model = C / ((1/sigma_history) + C)
     # Где C - константа, регулирующая базовый "доверие" к модели
-    # Или просто линейno: w_hist = max_weight - (sigma_history - min_sigma) / (max_sigma - min_sigma) * (max_weight - min_weight)
+    # Или просто линейно: w_hist = max_weight - (sigma_history - min_sigma) / (max_sigma - min_sigma) * (max_weight - min_weight)
     # Где min_sigma, max_sigma, min_weight, max_weight - настраиваемые параметры.
 
     # Вернемся к простой линейной интерполяции весов из примера
@@ -378,6 +378,15 @@ def predict_all_tf(save_output_flag, symbol_filter=None, group_filter=None):
     # >>> ДОБАВЛЕНО согласно патчу
     target_syms = None
     files_suffix = "all" # Суффикс для файлов результатов по умолчанию
+
+    # --- Decision Logic Thresholds ---
+    # >>> NEW: Thresholds for enhanced decision logic based on roadmap item 1
+    THRESHOLD_DELTA_FINAL_ABS = 0.002  # Minimum absolute |ΔFinal| (0.2%)
+    THRESHOLD_SIGMA_HIST_MAX = 0.015   # Maximum historical volatility (σHist) (1.5%)
+    THRESHOLD_TP_HIT_PROBA_MIN = 0.60  # Minimum TP Hit Probability (60%)
+    MIN_CONFIDENCE_FOR_TRADE = 0.08    # Minimum confidence from the classifier (8%)
+    # --- End of Decision Logic Thresholds ---
+
     if symbol_filter:
         target_syms = [symbol_filter.upper()] # Приводим к верхнему регистру для безопасности
         logging.info(f"🛠️ Фильтр по символу: {target_syms[0]}")
@@ -740,14 +749,35 @@ def predict_all_tf(save_output_flag, symbol_filter=None, group_filter=None):
                 'tp_hit_proba': tp_hit_proba,
                 'error': None # Поле для будущих ошибок по символу/ТФ
             }
-            # >>> ДОБАВЛЕНО согласно патчу: Поле is_trade_worthy
-            prediction_entry['is_trade_worthy'] = (
-                prediction_entry['direction'] != 'none' and
-                prediction_entry['confidence_score'] > 0.08 and
-                abs(prediction_entry['delta_final']) > 0.003 and
-                prediction_entry['signal'] in ['UP', 'DOWN', 'STRONG UP', 'STRONG DOWN'] and
-                (pd.isna(prediction_entry['tp_hit_proba']) or prediction_entry['tp_hit_proba'] > 0.55)
+            # >>> ИЗМЕНЕНО: Расширенная логика для 'is_trade_worthy' согласно пункту 1 дорожной карты
+            trade_signal_candidate = prediction_entry['signal']
+            current_delta_final = prediction_entry['delta_final']
+            current_sigma_hist = prediction_entry['std_delta_similar']
+            current_tp_hit_proba = prediction_entry['tp_hit_proba']
+            current_confidence = prediction_entry['confidence_score']
+
+            is_worthy = False # Default to not worthy
+
+            # Common conditions first (confidence, sigma_hist, tp_hit_proba)
+            passes_common_filters = (
+                current_confidence > MIN_CONFIDENCE_FOR_TRADE and
+                (pd.isna(current_sigma_hist) or current_sigma_hist < THRESHOLD_SIGMA_HIST_MAX) and
+                (pd.isna(current_tp_hit_proba) or current_tp_hit_proba > THRESHOLD_TP_HIT_PROBA_MIN)
             )
+
+            if passes_common_filters:
+                if trade_signal_candidate in ['LONG', 'UP', 'STRONG UP']:
+                    # For LONG, delta_final must be positive and greater than threshold
+                    if pd.notna(current_delta_final) and current_delta_final > THRESHOLD_DELTA_FINAL_ABS:
+                        is_worthy = True
+                elif trade_signal_candidate in ['SHORT', 'DOWN', 'STRONG DOWN']:
+                    # For SHORT, delta_final must be negative and its absolute value greater than threshold
+                    if pd.notna(current_delta_final) and current_delta_final < -THRESHOLD_DELTA_FINAL_ABS:
+                        is_worthy = True
+            
+            prediction_entry['is_trade_worthy'] = is_worthy
+            # --- End of New Decision Logic ---
+
             all_predictions_data.append(prediction_entry)
 
             # Формирование торгового плана
