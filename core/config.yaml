@@ -1,0 +1,177 @@
+# Global Settings
+project_name: "CryptoPredict"
+version: "1.0.0"
+
+# Directories (relative to project root where core/ is located)
+# These will be joined with a base_path if needed in the scripts
+models_dir: "models"
+logs_dir: "logs"
+data_dir: "data"      # For features_*.pkl, sample_*.csv, update_log.txt
+database_dir: "database"
+
+# File Paths (can be constructed using dirs above)
+db_path: "database/market_data.db"
+update_log_file: "data/update_log.txt" # logging for old_update_binance_data.py
+pipeline_log_file: "logs/pipeline.log"
+
+# Timeframes & Symbols
+# General list, can be used as a default or for validation
+core_timeframes_list: ['1m', '5m', '15m', '30m', '1h', '4h', '1d']
+
+# Specific timeframe lists for different modules
+pipeline_default_timeframes: ['1m', '5m', '15m', '30m', '1h', '4h', '1d']
+predict_all_timeframes: ['5m', '15m', '30m', '1h', '4h', '1d']
+predict_backtest_timeframes_choices: ['5m', '15m', '30m', '1h', '4h', '1d']
+predict_multiframe_timeframes: ['1m', '5m', '15m', '30m', '1h', '4h', '1d']
+
+# Symbol Groups (used across multiple modules)
+symbol_groups:
+  top8:
+    - "BTCUSDT"
+    - "ETHUSDT"
+    - "BNBUSDT"
+    - "SOLUSDT"
+    - "XRPUSDT"
+    - "ADAUSDT"
+    - "LINKUSDT"
+    - "AVAXUSDT"
+  meme:
+    - "PEPEUSDT"
+    - "DOGEUSDT"
+    - "FLOKIUSDT"
+    - "WIFUSDT"
+    - "SHIBUSDT"
+  defi:
+    - "UNIUSDT"
+    - "AAVEUSDT"
+    - "SUSHIUSDT"
+    - "COMPUSDT"
+    # Add more DeFi symbols as needed
+
+# Data Ingestion (historical_data_loader.py - from old_update_binance_data.py)
+binance_api_config:
+  url: 'https://api.binance.com/api/v3/klines'
+  max_candles_per_symbol: 50000 # Max candles to fetch in one go for a symbol
+  # Binance launch date approx: 2017-07-14. Many pairs later, e.g. BTCUSDT 2017-08-17
+  default_start_date_ms: 1502928000000 # Corresponds to datetime(2017, 8, 17, tzinfo=timezone.utc).timestamp() * 1000
+  timeframes_map: # Mapping for Binance API interval strings
+    '1m': '1m'
+    '5m': '5m'
+    '15m': '15m'
+    '30m': '30m'
+    '1h': '1h'
+    '4h': '4h'
+    '1d': '1d'
+  # List of symbols for historical download.
+  # For very long lists, consider a separate file (e.g., core_symbols.txt)
+  core_symbols_list:
+    - 'BTCUSDT'
+    - 'ETHUSDT'
+    - 'BNBUSDT'
+    - 'XRPUSDT'
+    - 'LTCUSDT'
+    - 'BCHUSDT'
+    - 'LINKUSDT'
+    - 'DOTUSDT'
+    - 'ADAUSDT'
+    - 'SOLUSDT'
+    - 'AVAXUSDT'
+    - 'TRXUSDT'
+    - 'UNIUSDT'
+    - 'AEVOUSDT'
+    - 'ALPHAUSDT'
+    - 'APTUSDT'
+    - 'ARKMUSDT'
+    - 'ARUSDT'
+    - 'BIOUSDT'
+    - 'BSWUSDT'
+    - 'CATIUSDT'
+    - 'DOGEUSDT'
+    - 'DOGSUSDT'
+    - 'DYDXUSDT'
+    - 'EGLDUSDT'
+    - 'ENAUSDT'
+    - 'ETHFIUSDT'
+    - 'FETUSDT'
+    - 'FILUSDT'
+    - 'FLMUSDT'
+    - 'FLOKIUSDT'
+    - 'FTTUSDT'
+    - 'GMTUSDT'
+    - 'HBARUSDT'
+    - 'HMSTRUSDT'
+    - 'INITUSDT'
+    - 'IOUSDT'
+    - 'JUPUSDT'
+    - 'KAITOUSDT'
+    - 'KDAUSDT'
+    - 'MANTAUSDT'
+    - 'NEARUSDT'
+    - 'NEIROUSDT'
+    - 'NOTUSDT'
+    - 'ONDOUSDT'
+    - 'OPUSDT'
+    - 'PEOPLEUSDT'
+    - 'PENGUUSDT'
+    - 'PEPEUSDT'
+    - 'PNUTUSDT'
+    - 'POLUSDT'
+    - 'RENDERUSDT'
+    - 'SEIUSDT'
+    - 'STRKUSDT'
+    - 'SUIUSDT'
+    - 'TONUSDT'
+    - 'TRUMPUSDT'
+    - 'TWTUSDT'
+    - 'USUALUSDT'
+    - 'VANAUSDT'
+    - 'VIRTUALUSDT'
+    - 'WIFUSDT'
+    - 'WUSDT'
+
+# Feature Engineering (preprocessor.py - from preprocess_features.py)
+feature_engineering:
+  target_shift_candles: 5  # How many candles into the future to predict delta/volatility
+  tp_threshold: 0.005      # Threshold for target_tp_hit
+
+# Prediction (predictor.py - from predict_all.py)
+prediction:
+  target_class_names: ['STRONG DOWN', 'DOWN', 'NEUTRAL', 'UP', 'STRONG UP']
+  # Thresholds for enhanced decision logic
+  decision_thresholds:
+    delta_final_abs: 0.002
+    sigma_hist_max: 0.015
+    tp_hit_proba_min: 0.60
+    min_confidence_for_trade: 0.08
+  trade_plan_thresholds:
+    confidence: 0.08
+    tp_hit_proba: 0.55
+
+# Live Prediction (live_predictor.py - from predict_live.py)
+# Paths to features for live prediction, keyed by timeframe.
+# These assume features are pre-generated for "all" symbols.
+live_prediction_features_paths:
+  '5m': 'data/features_5m.pkl'
+  '15m': 'data/features_15m.pkl'
+  '30m': 'data/features_30m.pkl'
+
+# Symbol Selection (symbol_selector.py - from select_top_symbols.py)
+symbol_selection:
+  min_observations: 5000 # Min candle observations per TF for a symbol to be considered
+
+# Model Training (trainer.py - from train_model.py)
+model_training:
+  # For binary classification (UP/DOWN), target names for reports
+  target_class_names_binary: ['DOWN', 'UP']
+  # Probability threshold for converting probabilities to class in clf_class
+  predict_proba_threshold_class: 0.55
+  # CatBoost CV parameters can also be stored here if they become complex
+  # Example:
+  # catboost_cv_params:
+  #   iterations: 700
+  #   learning_rate: 0.03
+  #   # ... other params
+
+# Logging (General logging settings or paths if needed, many are dynamic)
+# Example:
+# log_level: "INFO"
