@@ -1,0 +1,46 @@
+# config/logging.yaml
+
+version: 1
+disable_existing_loggers: false # Keep existing loggers (like the basic one in config.py)
+
+formatters:
+  standard:
+    # Define the log format. %(name)s is the logger name (e.g., scripts.train)
+    format: '[%(asctime)s] %(levelname)s [%(name)s] %(message)s'
+    datefmt: '%Y-%m-%d %H:%M:%S' # Consistent timestamp format
+
+handlers:
+  console:
+    class: logging.StreamHandler
+    level: DEBUG # Default level for console handler (can be overridden by logger level)
+    formatter: standard
+    stream: ext://sys.stdout # Use sys.stdout
+
+  file_pipeline:
+    class: logging.FileHandler
+    level: INFO # Log INFO and higher to the main pipeline log file
+    formatter: standard
+    # Filename is relative to the script's current working directory by default
+    # We will update this path dynamically in the setup function
+    filename: logs/pipeline.log # Placeholder
+    encoding: utf-8
+
+  file_update:
+    class: logging.FileHandler
+    level: INFO # Log INFO and higher to the data update log file
+    formatter: standard
+    # Filename is relative to the script's current working directory by default
+    # We will update this path dynamically in the setup function
+    filename: data/update_log.txt # Placeholder
+    encoding: utf-8
+
+loggers:
+  # Specific logger for data update script
+  update_data:
+    level: INFO # Minimum level for messages handled by this logger
+    handlers: [console, file_update] # Send logs to console and the update log file
+    propagate: false # Prevent logs handled here from going to the root logger
+
+root: # Root logger configuration
+  level: DEBUG # Default level for the root logger (can be overridden by handlers/loggers)
+  handlers: [console, file_pipeline] # Main handlers for most logs
