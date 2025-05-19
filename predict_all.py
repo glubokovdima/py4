@@ -385,7 +385,7 @@ def predict_all_tf(save_output_flag, symbol_filter=None, group_filter=None):
     elif group_filter:
         group_key = group_filter.lower() # Приводим ключ группы к нижнему регистру
         if group_key not in GROUP_MODELS:
-            # Этот случай должен быть обработан в __main__ перед вызовом, но оставим проверку
+            # Этот случай должен быть обработан в __main__ перед вызывом, но оставим проверку
             logging.error(f"❌ Неизвестная группа символов: '{group_filter}'. Доступные группы: {list(GROUP_MODELS.keys())}")
             return # Выходим из функции, если группа не найдена
         target_syms = GROUP_MODELS[group_key]
@@ -406,17 +406,29 @@ def predict_all_tf(save_output_flag, symbol_filter=None, group_filter=None):
 
     for tf in TIMEFRAMES:
         logging.info(f"\n--- Обработка таймфрейма: {tf} ---")
-        # Модифицируем путь к файлу признаков, чтобы учесть возможный суффикс
-        # Исходя из provided diff в другом задании и контекста, preprocess_features создает файл с суффиксом.
-        features_path = f'data/features_{files_suffix}_{tf}.pkl'
 
-        if not os.path.exists(features_path):
-            logging.warning(f"⚠️ Файл признаков не найден: {features_path}. Пропуск таймфрейма {tf}.")
+        # >>> ИЗМЕНЕНО согласно патчу: Проверка наличия файлов признаков с fallback
+        # 1) сначала пробуем групповой/символьный файл
+        # Используем files_suffix, который был определен выше
+        group_path   = f"data/features_{files_suffix}_{tf}.pkl"
+        # 2) затем пробуем общий файл
+        generic_path = f"data/features_{tf}.pkl"
+
+        features_path = None
+        if os.path.exists(group_path):
+            features_path = group_path
+            logging.debug(f"Использую фильтрованный файл признаков: {group_path}")
+        elif os.path.exists(generic_path):
+            features_path = generic_path
+            logging.info(f"🛠️ Использую общий файл признаков: {generic_path}")
+        else:
+            logging.warning(f"⚠️ Ни фильтрованная ({group_path}), ни общая ({generic_path}) версия файла признаков не найдены. Пропуск таймфрейма {tf}.")
             continue
 
         try:
-            # Указываем engine='pyarrow' для ускорения чтения, если pyarrow установлен
-            df = pd.read_pickle(features_path, engine='pyarrow')
+            # >>> ИЗМЕНЕНО согласно патчу: убираем engine=...
+            # Читаем pickle файл
+            df = pd.read_pickle(features_path)
         except Exception as e:
             logging.error(f"❌ Не удалось прочитать файл признаков {features_path}: {e}. Пропуск таймфрейма {tf}.")
             continue
@@ -425,26 +437,44 @@ def predict_all_tf(save_output_flag, symbol_filter=None, group_filter=None):
             logging.warning(f"⚠️ Файл признаков пуст: {features_path}. Пропуск таймфрейма {tf}.")
             continue
 
-        # Символы в df уже отфильтрованы preprocess_features, если файл с суффиксом.
-        # Проверим, что символы в загруженном df соответствуют target_syms (если он задан)
-        available_symbols_in_data = df['symbol'].unique().tolist()
+        # Символы в df уже отфильтрованы preprocess_features, если файл с суффиксом был найден.
+        # Если загружен generic_path, то df содержит все символы, и нам нужно отфильтровать его.
+        # Проверка, что символы в загруженном df соответствуют target_syms (если он задан)
+        available_symbols_in_data_before_filter = df['symbol'].unique().tolist()
+
         if target_syms is not None:
-             # Это проверка консистентности. Если preprocess_features работает правильно,
-             # available_symbols_in_data должно быть подмножеством target_syms.
-             symbols_in_file_but_not_in_filter = [sym for sym in available_symbols_in_data if sym not in target_syms]
-             symbols_in_filter_but_not_in_file = [sym for sym in target_syms if sym not in available_symbols_in_data]
+            # Если мы загрузили общий файл (generic_path), то df еще не отфильтрован.
+            # Если мы загрузили фильтрованный файл (group_path), то df уже отфильтрован preprocess_features.
+            # В любом случае, применяем фильтр на df, чтобы быть уверенными.
+            before_filter_count = len(df)
+            # Фильтруем только если загрузили generic_path ИЛИ если загруженный файл содержит символы,
+            # которых нет в target_syms (проверка консистентности).
+            # Самый простой способ - просто всегда фильтровать df по target_syms, если target_syms не None.
+            # Это безопасно, даже если df уже отфильтрован.
+            df = df[df['symbol'].isin(target_syms)].copy() # Используем .copy() для избежания SettingWithCopyWarning
+            after_filter_count = len(df)
 
-             if symbols_in_file_but_not_in_filter:
-                  logging.warning(f"⚠️ Файл признаков {features_path} содержит неожиданные символы: {symbols_in_file_but_not_in_filter}. Они будут проигнорированы.")
-                  # Удаляем их из df на всякий случай
-                  df = df[df['symbol'].isin(target_syms)]
-
-             if symbols_in_filter_but_not_in_file:
-                  logging.warning(f"⚠️ Символы из фильтра отсутствуют в файле признаков {features_path}: {symbols_in_filter_but_not_in_file}. Пропускаем их.")
-                  # Эти символы просто не будут найдены при итерации ниже
+            symbols_in_file_but_not_in_filter = [sym for sym in available_symbols_in_data_before_filter if sym not in target_syms]
+            symbols_in_filter_but_not_in_file_after_load = [sym for sym in target_syms if sym not in available_symbols_in_data_before_filter]
 
 
-        features_list_path = f"models/{tf}_features_selected.txt"
+            if symbols_in_file_but_not_in_filter:
+                 logging.warning(f"⚠️ Отфильтровано {len(symbols_in_file_but_not_in_filter)} неожиданных символов из файла признаков {features_path}.")
+
+            if symbols_in_filter_but_not_in_file_after_load:
+                 logging.warning(f"⚠️ Символы из фильтра отсутствуют в загруженных данных ({features_path}): {symbols_in_filter_but_not_in_file_after_load}. Пропускаем их.")
+
+
+            if df.empty:
+                 logging.info(f"🤷 После фильтрации по символам/группе нет данных на {tf}. Пропуск таймфрейма {tf}.")
+                 continue # Переходим к следующему таймфрейму
+
+            logging.info(f"Фильтрация DataFrame: {before_filter_count} → {after_filter_count} строк для TF {tf}.")
+
+
+        # >>> КОНЕЦ БЛОКА ФИЛЬТРАЦИИ DATAFRAME (модифицированного)
+
+        features_list_path = f"models/{files_suffix}_{tf}_features_selected.txt"
         if not os.path.exists(features_list_path):
             logging.error(
                 f"❌ Файл со списком признаков '{features_list_path}' не найден. Невозможно безопасно продолжить для {tf}. Пропуск.")
@@ -476,7 +506,8 @@ def predict_all_tf(save_output_flag, symbol_filter=None, group_filter=None):
         # который берется из загруженного df, который уже отфильтрован (или не отфильтрован).
         # Оставим только проверку на пустой список для обработки
         if not symbols_to_process_this_tf:
-             logging.info(f"🤷 Нет символов для обработки на {tf} из загруженного файла признаков {features_path}.")
+             # Этот лог уже должен быть покрыт фильтрацией выше, но на всякий случай
+             logging.info(f"🤷 Нет символов для обработки на {tf} из загруженного DataFrame после потенциальной фильтрации.")
              continue # Переходим к следующему таймфрейму
 
 
@@ -495,6 +526,7 @@ def predict_all_tf(save_output_flag, symbol_filter=None, group_filter=None):
             logging.info(f"--- Обработка {symbol} на {tf} ---")
 
             # Загрузка моделей для конкретного символа и ТФ
+            # load_model_with_fallback уже реализует логику загрузки групповых/общих моделей
             model_class = load_model_with_fallback(symbol, tf, "clf_class")
             model_delta = load_model_with_fallback(symbol, tf, "reg_delta")
             model_vol = load_model_with_fallback(symbol, tf, "reg_vol")
