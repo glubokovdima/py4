@@ -182,6 +182,23 @@ def main_menu():
             elif choice == '3':
                 tfs = select_timeframes_interactive("Построение признаков")
                 if tfs:
+                    group_or_symbol = input("Введите группу (например: top8) или символ (например: BTCUSDT), или оставьте пустым для всех: ").strip()
+                    group_args = []
+                    if group_or_symbol:
+                        if group_or_symbol.lower() in ['top8', 'meme', 'defi']:
+                            group_args = ["--symbol-group", group_or_symbol.lower()]
+                        else:
+                            group_args = ["--symbol", group_or_symbol.upper()]
+
+                    for tf_item in tfs:
+                        print(f"\n--- Построение признаков для {group_or_symbol or 'всех'} ({tf_item}) ---")
+                        if run_script(
+                            [PYTHON_EXECUTABLE, "preprocess_features.py", "--tf", tf_item] + group_args,
+                            f"Признаки для {tf_item} ({group_or_symbol or 'все'})"
+                        ) != 0:
+                            print(f"Построение признаков для {tf_item} прервано. Пропуск остальных.")
+                            break
+
                     for tf_item in tfs:
                         print(f"\n--- Построение признаков для {tf_item} ---")
                         if run_script([PYTHON_EXECUTABLE, "preprocess_features.py", "--tf", tf_item],
@@ -192,13 +209,15 @@ def main_menu():
             elif choice == '4':
                 tfs = select_timeframes_interactive("Обучение моделей")
                 if tfs:
-                    # Очистку перед обучением убрали отсюда, т.к. она должна быть раньше или как отдельная опция
+                    group_or_symbol = input("Введите символ (например: BTCUSDT), группу (например: top8), или оставьте пустым для всех: ").strip()
+                    symbol_arg = ["--symbol", group_or_symbol] if group_or_symbol else []
+
                     for tf_item in tfs:
-                        print(f"\n--- Обучение моделей для {tf_item} ---")
-                        if run_script([PYTHON_EXECUTABLE, "train_model.py", "--tf", tf_item],
-                                      f"Обучение для {tf_item}") != 0:
-                            print(f"Обучение для {tf_item} прервано или завершилось с ошибкой. Пропуск остальных.")
+                        desc = f"Обучение для {group_or_symbol or 'всех пар'} ({tf_item})"
+                        if run_script([PYTHON_EXECUTABLE, "train_model.py", "--tf", tf_item] + symbol_arg, desc) != 0:
+                            print(f"{desc} прервано или завершилось с ошибкой. Пропуск остальных.")
                             break
+
             elif choice == '5':
                 tfs = select_timeframes_interactive("Пайплайн: Мини-обновление -> Признаки -> Обучение")
                 if tfs:
@@ -232,8 +251,12 @@ def main_menu():
                         print("Полный пересбор прерван на этапе обновления/построения признаков.")
 
 
-            elif choice == '8':  # Было 7
-                run_script([PYTHON_EXECUTABLE, "predict_all.py", "--save"], "Генерация прогнозов")
+            elif choice == '8':
+                print_header("Генерация прогнозов")
+                symbol_input = input("Введите символ (например: BTCUSDT) или оставьте пустым для всех: ").strip().upper()
+                symbol_args = ["--symbol", symbol_input] if symbol_input else []
+
+                run_script([PYTHON_EXECUTABLE, "predict_all.py", "--save"] + symbol_args, f"Генерация прогнозов для {symbol_input or 'всех пар'}")
 
             elif choice == '9':  # Было 8
                 print_header("Запуск бэктеста")

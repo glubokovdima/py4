@@ -10,14 +10,101 @@ import numpy as np
 import sys  # Для Ctrl+C
 import logging  # Для более детального логгирования
 
+
 # --- Конфигурация ---
 # Настройка логирования для этого скрипта (можно выводить в файл или только в консоль)
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s [PredictAll] - %(message)s',
                     stream=sys.stdout)
 
+
+# ✅ 1. Добавь в верхнюю часть predict_all.py (после импортов):
+# import joblib # Already imported
+# import os # Already imported
+
+import joblib
+import os
+
+# Словарь групп: символы сгруппированы под именем (ключом)
+GROUP_MODELS = {
+    "top8": [
+        "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT",
+        "XRPUSDT", "ADAUSDT", "LINKUSDT", "AVAXUSDT"
+    ],
+    "meme": [
+        "PEPEUSDT", "DOGEUSDT", "FLOKIUSDT", "WIFUSDT", "SHIBUSDT"
+    ]
+}
+
+def load_model_with_fallback(symbol, tf, model_type):
+    """
+    Пытается загрузить:
+    1. Индивидуальную модель: models/BTCUSDT_15m_clf_class.pkl
+    2. Групповую модель: models/top8_15m_clf_class.pkl (если symbol входит в группу)
+    3. Общую по таймфрейму: models/15m_clf_class.pkl
+    """
+    # 1. Персональная модель
+    symbol_model_path = f"models/{symbol}_{tf}_{model_type}.pkl"
+    if os.path.exists(symbol_model_path):
+        print(f"✅ Используется персональная модель для {symbol}: {model_type}")
+        return joblib.load(symbol_model_path)
+
+    # 2. Групповая модель
+    for group_name, symbol_list in GROUP_MODELS.items():
+        if symbol in symbol_list:
+            group_model_path = f"models/{group_name}_{tf}_{model_type}.pkl"
+            if os.path.exists(group_model_path):
+                print(f"✅ Используется групповая модель ({group_name}) для {symbol}: {model_type}")
+                return joblib.load(group_model_path)
+
+    # 3. Общая модель
+    default_model_path = f"models/{tf}_{model_type}.pkl"
+    if os.path.exists(default_model_path):
+        print(f"⚠️ Используется общая модель по TF: {model_type} → {default_model_path}")
+        return joblib.load(default_model_path)
+
+    print(f"❌ Модель не найдена ни для символа {symbol}, ни для группы, ни общая: {model_type}")
+    return None
+
+    """
+    Пытается загрузить модель под конкретную пару. Если нет — использует общую.
+    model_type: clf_class, reg_delta, reg_vol, clf_tp_hit
+    """
+    symbol_model_path = f"models/{symbol}_{tf}_{model_type}.pkl"
+    default_model_path = f"models/{tf}_{model_type}.pkl"
+
+    if os.path.exists(symbol_model_path):
+        print(f"✅ Используется модель для {symbol}: {model_type}")
+        try:
+            return joblib.load(symbol_model_path)
+        except Exception as e:
+            logging.error(f"Ошибка загрузки модели {symbol_model_path}: {e}")
+            # Fallback to default if symbol-specific fails to load
+            if os.path.exists(default_model_path):
+                print(f"⚠️ Ошибка загрузки {symbol_model_path}. Используется общая: {model_type}")
+                try:
+                    return joblib.load(default_model_path)
+                except Exception as e_default:
+                    logging.error(f"Ошибка загрузки общей модели {default_model_path}: {e_default}")
+                    return None
+            else:
+                print(f"❌ Модель не найдена: {symbol_model_path} (ошибка загрузки) и нет общей {default_model_path}")
+                return None
+
+    elif os.path.exists(default_model_path):
+        print(f"⚠️ Нет модели {symbol}_{tf}_{model_type}. Используется общая: {model_type}")
+        try:
+            return joblib.load(default_model_path)
+        except Exception as e:
+            logging.error(f"Ошибка загрузки общей модели {default_model_path}: {e}")
+            return None
+    else:
+        print(f"❌ Модель не найдена: ни {symbol_model_path}, ни {default_model_path}")
+        return None
+
+
 TIMEFRAMES = ['5m', '15m', '30m', '1h', '4h', '1d']  # Основные ТФ для прогноза
 FEATURES_PATH_TEMPLATE = 'data/features_{tf}.pkl'
-MODEL_PATH_TEMPLATE = 'models/{tf}_{model_type}.pkl'
+MODEL_PATH_TEMPLATE = 'models/{tf}_{model_type}.pkl'  # Still used by old load_model, might be relevant if other models use it
 LOG_DIR_PREDICT = 'logs'
 LATEST_PREDICTIONS_FILE = os.path.join(LOG_DIR_PREDICT, 'latest_predictions.csv')
 TRADE_PLAN_FILE = os.path.join(LOG_DIR_PREDICT, 'trade_plan.csv')
@@ -61,7 +148,7 @@ def is_conflict(delta_model, delta_history):
         (delta_model < 0 and delta_history > 0)
 
 
-def load_model(tf, model_type):
+def load_model(tf, model_type):  # This function might still be used for other models, or can be deprecated if not
     path = MODEL_PATH_TEMPLATE.format(tf=tf, model_type=model_type)
     if os.path.exists(path):
         try:
@@ -174,7 +261,6 @@ def predict_all_tf(save_output_flag):
             logging.warning(f"Файл признаков пуст: {features_path}. Пропуск таймфрейма {tf}.")
             continue
 
-        # ИЗМЕНЕНИЕ 2: Фиксация пути features_list_path
         features_list_path = f"models/{tf}_features_selected.txt"
         if not os.path.exists(features_list_path):
             logging.error(
@@ -190,38 +276,53 @@ def predict_all_tf(save_output_flag):
             logging.error(f"Ошибка чтения файла со списком признаков '{features_list_path}': {e}. Пропуск {tf}.")
             continue
 
-        model_class = load_model(tf, 'clf_class')
-        model_delta = load_model(tf, 'reg_delta')
-        model_vol = load_model(tf, 'reg_vol')
-        model_tp_hit = load_model(tf, 'clf_tp_hit')
-
-        # ИЗМЕНЕНИЕ 1: Логирование классов TP-hit модели
-        if model_tp_hit:
-            logging.info(f"Классы TP-hit модели ({tf}): {getattr(model_tp_hit, 'classes_', 'N/A')}")
-
-
-        if not all([model_class, model_delta, model_vol]):
-            logging.warning(f"Одна или несколько основных моделей для {tf} не загружены. Пропуск таймфрейма {tf}.")
-            continue
-
-        missing_cols_in_df = [col for col in feature_cols_from_file if col not in df.columns]
-        if missing_cols_in_df:
-            logging.error(
-                f"В DataFrame из {features_path} отсутствуют столбцы {missing_cols_in_df}, "
-                f"необходимые для модели {tf} (согласно {features_list_path}). Пропуск таймфрейма."
-            )
-            continue
+        # Model loading is now per-symbol, so it's moved inside the symbol loop.
+        # The old loading location and logging for TP-hit classes per TF is removed from here.
 
         for symbol in df['symbol'].unique():
             df_sym = df[df['symbol'] == symbol].sort_values('timestamp').copy()
             if df_sym.empty:
                 continue
 
+            logging.info(f"--- Обработка {symbol} на {tf} ---")
+
+            # ✅ 2. Заменить загрузку моделей
+            # Было:
+            # clf_class = joblib.load(f"models/{tf}_clf_class.pkl")
+            # reg_delta = joblib.load(f"models/{tf}_reg_delta.pkl")
+            # reg_vol = joblib.load(f"models/{tf}_reg_vol.pkl")
+            # clf_tp_hit = joblib.load(f"models/{tf}_clf_tp_hit.pkl")
+            # Стало (используя существующие имена переменных model_class, model_delta и т.д.):
+            model_class = load_model_with_fallback(symbol, tf, "clf_class")
+            model_delta = load_model_with_fallback(symbol, tf, "reg_delta")
+            model_vol = load_model_with_fallback(symbol, tf, "reg_vol")
+            model_tp_hit = load_model_with_fallback(symbol, tf, "clf_tp_hit")
+
+            # Логирование классов TP-hit модели (перемещено сюда, т.к. модель загружается для symbol, tf)
+            if model_tp_hit:
+                # Используем logging.info вместо print для консистентности, но если важно сохранить print, можно оставить.
+                # Для примера, сохраним print из load_model_with_fallback, а здесь используем logging.
+                logging.info(f"Классы TP-hit модели ({symbol}, {tf}): {getattr(model_tp_hit, 'classes_', 'N/A')}")
+
+            if not all([model_class, model_delta, model_vol]):  # model_tp_hit is optional
+                logging.warning(
+                    f"Одна или несколько основных моделей для {symbol} на {tf} не загружены. Пропуск символа {symbol} на этом таймфрейме.")
+                continue  # Skip this symbol for this tf
+
             row_df = df_sym.iloc[-1:].copy()
             hist_df_full = df_sym.iloc[:-1].copy()
 
             if 'close' not in row_df.columns or 'timestamp' not in row_df.columns:
                 logging.warning(f"В последних данных для {symbol} {tf} отсутствует 'close' или 'timestamp'. Пропуск.")
+                continue
+
+            # Проверка, что feature_cols_from_file не отсутствуют в row_df (уже есть проверка ниже на X_live)
+            missing_cols_in_df_for_symbol = [col for col in feature_cols_from_file if col not in row_df.columns]
+            if missing_cols_in_df_for_symbol:
+                logging.error(
+                    f"В DataFrame для {symbol} на {tf} из {features_path} отсутствуют столбцы {missing_cols_in_df_for_symbol}, "
+                    f"необходимые для модели (согласно {features_list_path}). Пропуск символа {symbol}."
+                )
                 continue
 
             X_live = row_df[feature_cols_from_file]
@@ -248,7 +349,15 @@ def predict_all_tf(save_output_flag):
                     hist_for_sim_features_clean = hist_for_sim_features.loc[common_valid_indices]
                     hist_for_sim_deltas_clean = hist_for_sim_deltas.loc[common_valid_indices]
 
-                    if len(hist_for_sim_features_clean) >= 15:
+                    if len(hist_for_sim_features_clean) >= 15:  # Ensure enough data for similarity analysis
+                        # Check if X_live has all columns required by hist_for_sim_features_clean for similarity
+                        if not X_live.columns.equals(hist_for_sim_features_clean.columns):
+                            common_cols_sim = X_live.columns.intersection(hist_for_sim_features_clean.columns)
+                            if len(common_cols_sim) < len(X_live.columns) or len(common_cols_sim) < len(
+                                    hist_for_sim_features_clean.columns):
+                                logging.warning(
+                                    f"Несовпадение колонок для similarity_analysis ({symbol}, {tf}). X_live: {len(X_live.columns)}, Hist: {len(hist_for_sim_features_clean.columns)}, Common: {len(common_cols_sim)}")
+                                # Potentially skip similarity or use common_cols_sim cautiously
                         avg_delta_similar, std_delta_similar, similarity_hint = similarity_analysis(
                             X_live, hist_for_sim_features_clean, hist_for_sim_deltas_clean)
                     else:
@@ -282,31 +391,32 @@ def predict_all_tf(save_output_flag):
             if model_tp_hit:
                 try:
                     tp_hit_proba_all_classes = model_tp_hit.predict_proba(X_live)[0]
-                    # Проверяем, соответствуют ли классы модели ожидаемым 0 и 1
                     model_tp_classes = getattr(model_tp_hit, 'classes_', None)
                     if model_tp_classes is not None and len(model_tp_classes) == 2:
-                        # Ищем индекс класса 1 (положительный исход)
                         try:
-                            class_1_idx = list(model_tp_classes).index(1) # или float(1), bool(True) в зависимости от того, как обучалось
+                            class_1_idx = list(model_tp_classes).index(1)
                             tp_hit_proba = tp_hit_proba_all_classes[class_1_idx]
                         except ValueError:
-                            logging.warning(f"Класс '1' не найден в model_tp_hit.classes_ ({model_tp_classes}) для {symbol} {tf}. Использую индекс 1 по умолчанию.")
+                            logging.warning(
+                                f"Класс '1' не найден в model_tp_hit.classes_ ({model_tp_classes}) для {symbol} {tf}. Использую индекс 1 по умолчанию, если возможно.")
                             if len(tp_hit_proba_all_classes) > 1:
-                                tp_hit_proba = tp_hit_proba_all_classes[1]
-                            else: # Если только один класс, и он не 1
-                                tp_hit_proba = 0.0 # Или другое значение по умолчанию
-                    elif len(tp_hit_proba_all_classes) > 1 : # Если классов нет, но вероятностей две
-                         tp_hit_proba = tp_hit_proba_all_classes[1] # По умолчанию берем вторую
-                         logging.debug(f"Атрибут classes_ отсутствует у model_tp_hit или содержит не 2 класса. Использую индекс 1 для tp_hit_proba для {symbol} {tf}.")
+                                tp_hit_proba = tp_hit_proba_all_classes[1]  # Assume 1 is the positive class at index 1
+                            else:
+                                tp_hit_proba = 0.0  # Or handle as error / nan
+                    elif len(tp_hit_proba_all_classes) > 1:
+                        tp_hit_proba = tp_hit_proba_all_classes[1]
+                        logging.debug(
+                            f"Атрибут classes_ отсутствует у model_tp_hit или содержит не 2 класса для {symbol} {tf}. Использую индекс 1 для tp_hit_proba.")
                     elif len(tp_hit_proba_all_classes) == 1:
-                        logging.warning(f"Модель TP-hit для {symbol} {tf} вернула только одну вероятность: {tp_hit_proba_all_classes[0]}. Невозможно определить tp_hit_proba.")
-                        tp_hit_proba = np.nan # или 0.0, или логика на основе pred_class_idx
+                        logging.warning(
+                            f"Модель TP-hit для {symbol} {tf} вернула только одну вероятность: {tp_hit_proba_all_classes[0]}. Невозможно определить tp_hit_proba.")
+                        # tp_hit_proba remains np.nan
                     else:
-                        logging.warning(f"Неожиданный формат вывода predict_proba от model_tp_hit для {symbol} {tf}: {tp_hit_proba_all_classes}")
+                        logging.warning(
+                            f"Неожиданный формат вывода predict_proba от model_tp_hit для {symbol} {tf}: {tp_hit_proba_all_classes}")
 
                 except Exception as e:
                     logging.error(f"Ошибка в модели TP-hit для {symbol} {tf}: {e}")
-
 
             direction = 'long' if signal in ['UP', 'STRONG UP'] else 'short' if signal in ['DOWN',
                                                                                            'STRONG DOWN'] else 'none'
@@ -339,7 +449,8 @@ def predict_all_tf(save_output_flag):
 
             if direction != 'none' and confidence > 0.05 and (pd.isna(tp_hit_proba) or tp_hit_proba > 0.6):
                 rr_value = 0
-                if not pd.isna(sl) and not pd.isna(tp) and abs(entry_price - sl) > 1e-9:
+                if not pd.isna(sl) and not pd.isna(tp) and abs(
+                        entry_price - sl) > 1e-9:  # Ensure SL is not zero or too close to entry
                     rr_value = round(abs(tp - entry_price) / abs(entry_price - sl), 2)
 
                 trade_plan.append({
@@ -352,7 +463,7 @@ def predict_all_tf(save_output_flag):
     if save_output_flag and all_predictions_data:
         logging.info("Сохранение результатов...")
         df_out_list = []
-        proba_dict_keys_example = TARGET_CLASS_NAMES
+        proba_dict_keys_example = TARGET_CLASS_NAMES  # Default keys
 
         for r_item in all_predictions_data:
             item = {
@@ -371,8 +482,9 @@ def predict_all_tf(save_output_flag):
                 'confidence_hint': r_item['confidence_hint'],
                 'similarity_hint': r_item['similarity_hint'],
             }
-            if r_item['proba_dict']:
+            if r_item['proba_dict']:  # Should always be true if proba_raw was successful
                 item.update(r_item['proba_dict'])
+                # Update proba_dict_keys_example in case the number of classes varies (though TARGET_CLASS_NAMES should be fixed)
                 proba_dict_keys_example = list(r_item['proba_dict'].keys())
 
             df_out_list.append(item)
@@ -384,7 +496,10 @@ def predict_all_tf(save_output_flag):
             'predicted_volatility', 'entry', 'sl', 'tp', 'direction',
             'signal_strength', 'conflict', 'confidence_hint', 'similarity_hint'
         ]
-        csv_columns_order.extend(proba_dict_keys_example)
+        # Add proba columns to the desired order
+        csv_columns_order.extend(proba_dict_keys_example)  # Add keys like 'STRONG DOWN', 'DOWN', etc.
+
+        # Ensure all columns in df_out are included, even if not in csv_columns_order
         final_csv_columns = [col for col in csv_columns_order if col in df_out.columns]
         for col in df_out.columns:
             if col not in final_csv_columns:
@@ -397,6 +512,8 @@ def predict_all_tf(save_output_flag):
                 logging.info(f"📄  Сигналы сохранены в: {LATEST_PREDICTIONS_FILE}")
             except Exception as e:
                 logging.error(f"Не удалось сохранить {LATEST_PREDICTIONS_FILE}: {e}")
+        else:
+            logging.info("Нет данных для сохранения в LATEST_PREDICTIONS_FILE.")
 
         if trade_plan:
             df_trade_plan = pd.DataFrame(trade_plan)
@@ -430,10 +547,15 @@ def predict_all_tf(save_output_flag):
 
         for symbol_key, rows_list in grouped_by_symbol.items():
             try:
+                # Sort by TIMEFRAMES order, then by confidence score descending
                 sorted_rows = sorted(rows_list,
-                                     key=lambda r_item_sort: (TIMEFRAMES.index(r_item_sort['tf']),
+                                     key=lambda r_item_sort: (TIMEFRAMES.index(r_item_sort['tf'])
+                                                              if r_item_sort['tf'] in TIMEFRAMES else float('inf'),
+                                                              # Handle TFs not in TIMEFRAMES
                                                               -r_item_sort['confidence_score']))
-            except ValueError:
+            except ValueError:  # Should not happen if TIMEFRAMES list is correct
+                logging.warning(
+                    f"Ошибка сортировки для {symbol_key}, возможно TF не в списке TIMEFRAMES. Сортировка только по уверенности.")
                 sorted_rows = sorted(rows_list, key=lambda r_item_sort: (-r_item_sort['confidence_score']))
 
             table_data_tabulate = []
@@ -448,7 +570,8 @@ def predict_all_tf(save_output_flag):
                     f"{r_tab['std_delta_similar']:.2%}" if not pd.isna(r_tab['std_delta_similar']) else "N/A",
                     f"{r_tab['delta_final']:.2%}" if not pd.isna(r_tab['delta_final']) else "N/A",
                     "❗" if r_tab['conflict'] else " ",
-                    r_tab['signal_strength'].replace(" Сильный", "🟢").replace(" Умеренный", "🟡").replace(" Слабый", "⚪"),
+                    r_tab['signal_strength'].replace(" Сильный", "🟢").replace(" Умеренный", "🟡").replace(" Слабый",
+                                                                                                         "⚪"),
                     f"{r_tab['tp_hit_proba']:.1%}" if not pd.isna(r_tab['tp_hit_proba']) else "N/A"
                 ])
             print(f"\n📊  Прогноз по символу: {symbol_key}")
