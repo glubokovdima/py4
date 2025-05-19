@@ -13,7 +13,7 @@ import logging
 from ..helpers.utils import (
     load_config,
     print_header,
-    run_script,
+    run_script, # Этот run_script теперь должен быть исправлен
     select_timeframes_interactive,
     clear_training_artifacts_interactive,
     ensure_base_directories
@@ -21,13 +21,13 @@ from ..helpers.utils import (
 
 # Import functions from other refactored modules
 # We'll call these functions directly instead of subprocesses for internal operations
-# from ..data_ingestion.historical_data_loader import main_historical_load_logic # Example
-# from ..features.preprocessor import main_preprocess_logic # Example
-# from ..training.trainer import main_train_logic # Example
-# from ..prediction.predictor import main_predict_all_logic # Example
-# from ..backtesting.backtester import main_backtest_logic # Example
-# from ..pipelines.main_pipeline import main_pipeline_logic # Example
-# from ..analysis.symbol_selector import main_symbol_selection_logic # Example
+from ..data_ingestion.historical_data_loader import main_historical_load_logic # Example
+from ..features.preprocessor import main_preprocess_logic # Example
+from ..training.trainer import main_train_logic # Example
+from ..prediction.predictor import main_predict_all_logic # Example
+from ..backtesting.backtester import main_backtest_logic # Example
+from ..pipelines.main_pipeline import main_pipeline_logic # Example
+from ..analysis.symbol_selector import main_symbol_selection_logic # Example
 
 # Configure logging for this module (can be basic, or more advanced if needed)
 logger = logging.getLogger(__name__)
@@ -159,14 +159,14 @@ def main_menu():
         try:
             if choice == '1':
                 # For external scripts, we still use subprocess
-                # Assumes old_update_binance_data.py is in the project root, not core
-                run_script([PYTHON_EXECUTABLE, "old_update_binance_data.py", "--all"], "Полная загрузка данных")
+                # run_script now handles path resolution if historical_data_loader.py is in project root
+                run_script([PYTHON_EXECUTABLE, "historical_data_loader.py", "--all-tf-all-core"], "Полная загрузка данных") # Changed from --all
 
             elif choice == '2':
                 tfs = select_timeframes_interactive("Инкрементальное обновление", core_timeframes)
                 if tfs:
-                    # Assumes mini_update_binance_data.py is in the project root
-                    run_script([PYTHON_EXECUTABLE, "mini_update_binance_data.py", "--tf"] + tfs,
+                    # run_script now handles path resolution if incremental_data_loader.py is in project root
+                    run_script([PYTHON_EXECUTABLE, "incremental_data_loader.py", "--tf"] + tfs,
                                f"Инкрементальное обновление для {', '.join(tfs)}")
 
             elif choice == '3':
@@ -188,7 +188,7 @@ def main_menu():
 
                     for tf_item in tfs:
                         desc = f"Построение признаков {description_suffix} ({tf_item})"
-                        # Assumes preprocess_features.py is in the project root
+                        # run_script now handles path resolution
                         if run_script([PYTHON_EXECUTABLE, "preprocess_features.py", "--tf", tf_item] + group_args, desc) != 0:
                             logger.warning(f"{desc} прервано или завершилось с ошибкой. Пропуск остальных таймфреймов.")
                             break
@@ -200,7 +200,7 @@ def main_menu():
                         f"Введите группу ({'/'.join(available_symbol_groups)}) или символ (например: BTCUSDT),\n"
                         "или оставьте пустым для всех: "
                     ).strip()
-                    symbol_arg_list = []  # Renamed from symbol_arg to avoid conflict
+                    symbol_arg_list = []
                     description_suffix = "для всех пар"
                     if group_or_symbol:
                         if group_or_symbol.lower() in available_symbol_groups:
@@ -212,7 +212,7 @@ def main_menu():
 
                     for tf_item in tfs:
                         desc = f"Обучение {description_suffix} ({tf_item})"
-                        # Assumes train_model.py is in the project root
+                        # run_script now handles path resolution
                         if run_script([PYTHON_EXECUTABLE, "train_model.py", "--tf", tf_item] + symbol_arg_list, desc) != 0:
                             logger.warning(f"{desc} прервано или завершилось с ошибкой. Пропуск остальных таймфреймов.")
                             break
@@ -220,13 +220,13 @@ def main_menu():
             elif choice == '5':
                 tfs = select_timeframes_interactive("Пайплайн: Мини-обновление -> Признаки -> Обучение", core_timeframes)
                 if tfs:
-                    # Assumes pipeline.py is in the project root
+                    # run_script now handles path resolution
                     run_script([PYTHON_EXECUTABLE, "pipeline.py", "--train", "--skip-predict", "--tf"] + tfs,
                                "Пайплайн (мини-обновление, признаки, обучение)")
             elif choice == '6':
                 tfs = select_timeframes_interactive("Пайплайн: Полное обновление -> Признаки -> Обучение", core_timeframes)
                 if tfs:
-                    # Assumes pipeline.py is in the project root
+                    # run_script now handles path resolution
                     run_script(
                         [PYTHON_EXECUTABLE, "pipeline.py", "--full-update", "--train", "--skip-predict", "--tf"] + tfs,
                         "Пайплайн (полное обновление, признаки, обучение)")
@@ -236,12 +236,11 @@ def main_menu():
                     "ПОЛНЫЙ ПЕРЕСБОР: Очистка -> Полное обновление -> Признаки -> Обучение", core_timeframes)
                 if tfs:
                     print_header("Начало ПОЛНОГО ПЕРЕСБОРА")
-                    # Pass correct paths to clear_training_artifacts_interactive
                     clear_training_artifacts_interactive(
                         models_dir_path, logs_dir_path, data_dir_path,
                         database_dir_path, update_log_file_path
                     )
-                    # Assumes pipeline.py is in the project root
+                    # run_script now handles path resolution
                     if run_script([PYTHON_EXECUTABLE, "pipeline.py", "--full-update", "--train", "--skip-predict", "--tf"] + tfs,
                                   "Этап 1/1 (Полный пересбор): Обновление, Признаки, Обучение") == 0:
                         print_header("ПОЛНЫЙ ПЕРЕСБОР завершен успешно.")
@@ -264,7 +263,7 @@ def main_menu():
                     else:
                         predict_args += ["--symbol", group_or_symbol.upper()]
                         description_suffix = f"для символа {group_or_symbol.upper()}"
-                # Assumes predict_all.py is in the project root
+                # run_script now handles path resolution
                 run_script(
                     [PYTHON_EXECUTABLE, "predict_all.py"] + predict_args,
                     f"Генерация прогнозов {description_suffix}"
@@ -272,23 +271,22 @@ def main_menu():
 
             elif choice == '9':
                 print_header("Запуск бэктеста")
-                print("Доступные таймфреймы:", ", ".join(core_timeframes))  # Use core_timeframes from config
+                print("Доступные таймфреймы:", ", ".join(core_timeframes))
                 tf_backtest = input(f"Введите таймфрейм для бэктеста (например, 15m) или 'q' для отмены: ").strip()
                 if tf_backtest.lower() == 'q':
                     continue
-                if tf_backtest in core_timeframes:  # Validate against core_timeframes
-                    # Assumes predict_backtest.py is in the project root
+                if tf_backtest in core_timeframes:
+                    # run_script now handles path resolution
                     run_script([PYTHON_EXECUTABLE, "predict_backtest.py", "--tf", tf_backtest],
                                f"Бэктест для {tf_backtest}")
                 else:
                     logger.warning(f"Некорректный таймфрейм: {tf_backtest}")
 
             elif choice == '10':
-                # Assumes gpu_test.py is in the project root
+                # run_script now handles path resolution
                 run_script([PYTHON_EXECUTABLE, "gpu_test.py"], "Проверка GPU")
 
             elif choice == '11':
-                # Pass correct paths to clear_training_artifacts_interactive
                 clear_training_artifacts_interactive(
                     models_dir_path, logs_dir_path, data_dir_path,
                     database_dir_path, update_log_file_path
@@ -309,17 +307,13 @@ def main_menu():
             continue
         except Exception as e:
             logger.critical(f"Критическая ошибка в main_menu: {e}", exc_info=True)
-            # traceback.print_exc() # Already logged with exc_info=True
-            continue  # Return to menu after an error
-
+            continue
 
 def main_cli_entry_point():
     """
     The main entry point for the CLI application.
     Initializes logging and starts the main menu.
     """
-    # Initialize logging for the CLI
-    # You can make log_level configurable, e.g., from an environment variable or CLI arg to main_cli.py itself
     setup_logging(log_level_str="INFO")
 
     try:
@@ -328,23 +322,13 @@ def main_cli_entry_point():
         logger.info("Программа завершена пользователем (Ctrl+C).")
         print("\nПрограмма завершена пользователем (Ctrl+C).")
         sys.exit(0)
-    except SystemExit as e:  # To catch sys.exit calls from menu options
+    except SystemExit as e:
         logger.info(f"Программа завершается с кодом: {e.code}")
         sys.exit(e.code)
     except Exception as e:
         logger.critical(f"Критическая ошибка вне главного меню: {e}", exc_info=True)
-        # traceback.print_exc() # Already logged with exc_info=True
         sys.exit(1)
 
 
 if __name__ == "__main__":
-    # This allows running this CLI module directly if needed,
-    # though typically it would be invoked via a root script or setup.py entry point.
-
-    # Example: if you want to allow passing config path as an argument to this script itself
-    # parser_cli = argparse.ArgumentParser(description="Crypto Prediction CLI")
-    # parser_cli.add_argument('--config', type=str, default='core/config.yaml', help='Path to the configuration file.')
-    # cli_args = parser_cli.parse_args()
-    # Now you could pass cli_args.config to load_config if it accepted a path
-
     main_cli_entry_point()

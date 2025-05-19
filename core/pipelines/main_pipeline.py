@@ -180,13 +180,13 @@ def main_pipeline_logic(
         # Assumes old_update_binance_data.py is at project root
         _run_pipeline_step(
             "📦  Полная загрузка исторических данных (old_update --all-tf-all-core)",
-            [PYTHON_EXECUTABLE, "old_update_binance_data.py", "--all-tf-all-core"]  # Use the appropriate flag
+            [PYTHON_EXECUTABLE, "historical_data_loader.py", "--all-tf-all-core"]  # Use the appropriate flag
         )
     else:
         # Assumes mini_update_binance_data.py is at project root
         _run_pipeline_step(
             f"📥  Инкрементальное обновление свечей для {', '.join(timeframes_to_process)}",
-            [PYTHON_EXECUTABLE, "mini_update_binance_data.py", "--tf"] + timeframes_to_process
+            [PYTHON_EXECUTABLE, "incremental_data_loader.py", "--tf"] + timeframes_to_process
         )
 
     # --- Steps 2 & 3: Feature Preprocessing and Model Training (per timeframe) ---
