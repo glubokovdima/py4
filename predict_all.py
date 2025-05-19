@@ -25,6 +25,10 @@ GROUP_MODELS = {
     ],
     "meme": [
         "PEPEUSDT", "DOGEUSDT", "FLOKIUSDT", "WIFUSDT", "SHIBUSDT"
+    ],
+    # Добавьте сюда другие группы по необходимости
+    "defi": [
+        # Пример: "UNIUSDT", "AAVEUSDT", ...
     ]
 }
 
@@ -84,12 +88,18 @@ def load_model_with_fallback(symbol, tf, model_type):
 # и ее функциональность теперь полностью покрыта load_model_with_fallback.
 
 TIMEFRAMES = ['5m', '15m', '30m', '1h', '4h', '1d']  # Основные ТФ для прогноза
-FEATURES_PATH_TEMPLATE = 'data/features_{tf}.pkl'
+# FEATURES_PATH_TEMPLATE = 'data/features_{tf}.pkl' # Старый шаблон
+# Модифицируем шаблон пути, чтобы он учитывал суффикс (all, group, symbol)
+# Новая логика загрузки features_path будет внутри predict_all_tf
 # MODEL_PATH_TEMPLATE = 'models/{tf}_{model_type}.pkl' # Удалил, так как теперь используется load_model_with_fallback путями
 
 LOG_DIR_PREDICT = 'logs'
-LATEST_PREDICTIONS_FILE = os.path.join(LOG_DIR_PREDICT, 'latest_predictions.csv')
-TRADE_PLAN_FILE = os.path.join(LOG_DIR_PREDICT, 'trade_plan.csv')
+# Модифицируем имена файлов для сохранения, чтобы они включали суффикс фильтра
+# Это нужно, чтобы результаты для разных фильтров не перезаписывали друг друга
+# FILES_SUFFIX will be determined inside predict_all_tf based on the filter
+# LATEST_PREDICTIONS_FILE = os.path.join(LOG_DIR_PREDICT, 'latest_predictions.csv') # Старый путь
+# TRADE_PLAN_FILE = os.path.join(LOG_DIR_PREDICT, 'trade_plan.csv') # Старый путь
+
 
 # Убедимся, что директория для логов/результатов существует
 os.makedirs(LOG_DIR_PREDICT, exist_ok=True)
@@ -100,15 +110,50 @@ TARGET_CLASS_NAMES = ['STRONG DOWN', 'DOWN', 'NEUTRAL', 'UP', 'STRONG UP']
 def compute_final_delta(delta_model, delta_history, sigma_history):
     if pd.isna(delta_history) or pd.isna(sigma_history):
         return round(delta_model, 5)
-    if sigma_history < 0.005:
-        w1, w2 = 0.4, 0.6
-    elif sigma_history > 0.02:
-        w1, w2 = 0.8, 0.2
+    # Убедимся, что sigma_history не слишком мала во избежание деления на ноль или нестабильных весов
+    if sigma_history < 1e-9: # Очень маленькое значение, считаем его практически нулем
+         sigma_history = 1e-9 # Заменяем на очень маленькое положительное число
+         # Можно также решить полностью игнорировать history, если sigma_history близка к нулю, т.к. это идеальная история
+         # return round(delta_model, 5) # Альтернатива: если sigma_history ~ 0, то history идеальна, игнорируем model
+
+    # Старая логика весов - можно настроить
+    # if sigma_history < 0.005:
+    #     w1, w2 = 0.4, 0.6
+    # elif sigma_history > 0.02:
+    #     w1, w2 = 0.8, 0.2
+    # else:
+    #     alpha = (sigma_history - 0.005) / (0.02 - 0.005)
+    #     w1 = 0.4 + alpha * (0.8 - 0.4)
+    #     w2 = 1.0 - w1
+
+    # Альтернативная логика весов, основанная на обратной зависимости от сигмы истории
+    # Чем меньше сигма истории, тем больший вес у истории
+    # Можно использовать сигму как показатель "шума" или "надежности" исторического паттерна
+    # Пример: вес истории = 1 / sigma_history, вес модели = константа
+    # Нормализация весов: w_hist = (1/sigma_history) / ((1/sigma_history) + C), w_model = C / ((1/sigma_history) + C)
+    # Где C - константа, регулирующая базовый "доверие" к модели
+    # Или просто линейно: w_hist = max_weight - (sigma_history - min_sigma) / (max_sigma - min_sigma) * (max_weight - min_weight)
+    # Где min_sigma, max_sigma, min_weight, max_weight - настраиваемые параметры.
+
+    # Вернемся к простой линейной интерполяции весов из примера
+    min_sigma = 0.005
+    max_sigma = 0.020
+    weight_hist_at_min_sigma = 0.6 # Вес истории при очень низкой сигме
+    weight_hist_at_max_sigma = 0.2 # Вес истории при высокой сигме
+
+    if sigma_history <= min_sigma:
+        w_hist = weight_hist_at_min_sigma
+    elif sigma_history >= max_sigma:
+        w_hist = weight_hist_at_max_sigma
     else:
-        alpha = (sigma_history - 0.005) / (0.02 - 0.005)
-        w1 = 0.4 + alpha * (0.8 - 0.4)
-        w2 = 1.0 - w1
-    return round(w1 * delta_model + w2 * delta_history, 5)
+        # Линейная интерполяция веса истории между weight_hist_at_min_sigma и weight_hist_at_max_sigma
+        # по мере роста sigma_history от min_sigma до max_sigma
+        alpha = (sigma_history - min_sigma) / (max_sigma - min_sigma)
+        w_hist = weight_hist_at_min_sigma - alpha * (weight_hist_at_min_sigma - weight_hist_at_max_sigma)
+
+    w_model = 1.0 - w_hist
+
+    return round(w_model * delta_model + w_hist * delta_history, 5)
 
 
 def get_signal_strength(delta_final, confidence, sigma_history):
@@ -117,12 +162,58 @@ def get_signal_strength(delta_final, confidence, sigma_history):
 
     # Немного скорректировал логику силы сигнала, чтобы она лучше соответствовала диапазонам confidence и sigma
     # Это мое предположение, можно настроить по желанию
-    if abs(delta_final) > 0.02 and confidence > 0.5 and sigma_history < 0.015: # Более строгие условия для Сильного
-        return "🟢 Сильный"
-    elif abs(delta_final) > 0.01 and confidence > 0.2 and sigma_history < 0.025: # Умеренный
-        return "🟡 Умеренный"
-    else: # Слабый или неопределенный
+    # Пороги для delta_final и confidence, а также зависимость от надежности истории (обратная к sigma)
+    # Сильный сигнал: большая delta_final, высокая confidence, низкая sigma_history (надежная история)
+    # Умеренный сигнал: средняя delta_final, средняя confidence, средняя sigma_history
+    # Слабый сигнал: маленькая delta_final, низкая confidence, высокая sigma_history (ненадежная история)
+
+    delta_threshold_strong = 0.025 # 2.5%
+    delta_threshold_moderate = 0.010 # 1.0%
+
+    conf_threshold_strong = 0.15 # > conf_score - next_conf_score
+    conf_threshold_moderate = 0.05
+
+    sigma_threshold_reliable = 0.010 # История надежна, если сигма < 1%
+    sigma_threshold_unreliable = 0.020 # История ненадежна, если сигма > 2%
+
+
+    abs_delta = abs(delta_final)
+
+    if abs_delta > delta_threshold_strong and confidence > conf_threshold_strong:
+        # Сильный кандидат, теперь уточним по истории
+        if sigma_history < sigma_threshold_reliable:
+            return "🟢 Сильный"
+        elif sigma_history < sigma_threshold_unreliable:
+             # Умеренно надежная история снижает уверенность
+             return "🟡 Умеренный"
+        else:
+             # Ненадежная история сильно снижает уверенность
+             return "⚪ Слабый" # Или даже "Неопределенный"?
+
+    elif abs_delta > delta_threshold_moderate and confidence > conf_threshold_moderate:
+        # Умеренный кандидат, уточним по истории
+        if sigma_history < sigma_threshold_reliable:
+             # Умеренный сигнал + надежная история = может быть повышен до Умеренного
+             return "🟡 Умеренный" # Или даже "Сильный"? Решим оставить Умеренным
+        elif sigma_history < sigma_threshold_unreliable:
+             # Умеренный сигнал + умеренно надежная история = остается Умеренным
+             return "🟡 Умеренный"
+        else:
+             # Умеренный сигнал + ненадежная история = понижается до Слабого
+             return "⚪ Слабый"
+
+    else:
+        # Слабый сигнал по дельте или уверенности
         return "⚪ Слабый"
+
+    # Простая логика из примера:
+    # if abs(delta_final) > 0.02 and confidence > 0.5 and sigma_history < 0.015: # Более строгие условия для Сильного
+    #     return "🟢 Сильный"
+    # elif abs(delta_final) > 0.01 and confidence > 0.2 and sigma_history < 0.025: # Умеренный
+    #     return "🟡 Умеренный"
+    # else: # Слабый или неопределенный
+    #     return "⚪ Слабый"
+
 
 def is_conflict(delta_model, delta_history):
     if pd.isna(delta_history) or pd.isna(delta_model):
@@ -138,17 +229,21 @@ def is_conflict(delta_model, delta_history):
 
 
 def get_confidence_hint(score):
-    if score > 0.2:
+    if score > 0.20:
         return "Очень высокая уверенность"
-    elif score > 0.1:
-        return "Хорошая уверенность"
+    elif score > 0.10:
+        return "Высокая уверенность"
     elif score > 0.05:
-        return "Слабый сигнал" # Это может быть границей, после которой сигнал не торгуем
+        return "Умеренная уверенность"
+    elif score > 0.02: # Можно установить порог, ниже которого сигналы не торгуются
+         return "Низкая уверенность - будьте осторожны"
     else:
-        return "Низкая уверенность — лучше пропустить" # Ниже 0.05 совсем низко
+        return "Очень низкая уверенность - пропустить"
 
 
 def calculate_trade_levels(entry, direction, atr_value, rr=2.0):
+    # atr_value здесь интерпретируется как базовый размер движения (например, предсказанная волатильность или ATR)
+    # SL ставим на расстоянии atr_value, TP на расстоянии atr_value * rr
     if pd.isna(atr_value) or atr_value <= 1e-9:
         return np.nan, np.nan
     if direction == 'long':
@@ -161,42 +256,64 @@ def calculate_trade_levels(entry, direction, atr_value, rr=2.0):
         return np.nan, np.nan
     # Округляем до разумного количества знаков после запятой, зависит от цены актива
     # Для крипты 6 знаков обычно достаточно, но может потребоваться адаптация для очень дешевых монет
-    return round(sl, 6), round(tp, 6)
+    # Также нужно убедиться, что SL/TP не становятся отрицательными для очень дешевых монет при шort
+    sl = round(max(0, sl), 6) if direction == 'short' else round(sl, 6)
+    tp = round(max(0, tp), 6) if direction == 'short' else round(tp, 6) # TP тоже не может быть отрицательным
+
+    return sl, tp
 
 
 def similarity_analysis(X_live_df, X_hist_df, deltas_hist_series, top_n=15):
+    # X_live_df - одна строка DataFrame, X_hist_df - исторический DataFrame признаков
+    # deltas_hist_series - серия дельт для соответствующего исторического DataFrame
+
     if X_hist_df.empty or len(X_hist_df) < top_n:
         return np.nan, np.nan, "Недостаточно исторических данных для анализа схожести"
 
-    common_cols = X_live_df.columns.intersection(X_hist_df.columns)
-    # Проверим, есть ли признаки в X_live, которых нет в X_hist_df
-    missing_in_hist = list(set(X_live_df.columns) - set(common_cols))
-    if missing_in_hist:
-         logging.warning(f"Признаки {missing_in_hist} из X_live отсутствуют в X_hist_df. Анализ будет по общим признакам.")
+    # Важно: использовать только те колонки, которые есть и в X_live, и в X_hist
+    # X_live_df приходит сюда уже с отобранными признаками feature_cols_from_file
+    # X_hist_df - это hist_for_sim_features, которая тоже отобрана по feature_cols_from_file
+    # Так что колонки должны совпадать. Проверим на всякий случай.
+    if not X_live_df.columns.equals(X_hist_df.columns):
+         logging.error("Несоответствие колонок между X_live_df и X_hist_df перед анализом схожести!")
+         # Можно попытаться найти общие, но лучше, чтобы они совпадали на этапе подготовки
+         common_cols = X_live_df.columns.intersection(X_hist_df.columns)
+         if len(common_cols) == 0:
+              return np.nan, np.nan, "Нет общих признаков для анализа схожести"
+         logging.warning(f"Используются только общие признаки ({len(common_cols)}) для анализа схожести.")
+         X_live_df_common = X_live_df[common_cols]
+         X_hist_df_common = X_hist_df[common_cols]
+    else:
+         X_live_df_common = X_live_df
+         X_hist_df_common = X_hist_df
 
-    # Проверим, есть ли признаки в X_hist_df, которых нет в X_live
-    missing_in_live = list(set(X_hist_df.columns) - set(common_cols))
-    if missing_in_live:
-         logging.warning(f"Признаки {missing_in_live} из X_hist_df отсутствуют в X_live. Анализ будет по общим признакам.")
-
-
-    X_live_df_common = X_live_df[common_cols]
-    X_hist_df_common = X_hist_df[common_cols]
-
-    if X_live_df_common.empty or X_hist_df_common.empty:
-        return np.nan, np.nan, "Нет общих признаков для анализа схожести"
 
     # Убедимся, что X_hist_df_common и deltas_hist_series имеют совпадающие индексы
     # и удалим строки с NaN из признаков перед масштабированием и анализом схожести
     hist_df_aligned = X_hist_df_common.copy()
-    hist_deltas_aligned = deltas_hist_series.loc[hist_df_aligned.index].copy() # Привязываем дельты к текущему индексу признаков
+    # Проверим, что deltas_hist_series имеет тот же индекс, что и X_hist_df_common
+    if not deltas_hist_series.index.equals(hist_df_aligned.index):
+         # Если индексы не совпадают, попробуем выровнять по индексу признаков
+         try:
+              hist_deltas_aligned = deltas_hist_series.reindex(hist_df_aligned.index).copy()
+              logging.debug("Индексы deltas_hist_series выровнены по X_hist_df_common.")
+         except Exception as e:
+              logging.error(f"Ошибка при выравнивании индексов deltas_hist_series по X_hist_df_common: {e}")
+              return np.nan, np.nan, "Ошибка выравнивания данных для схожести"
+    else:
+        hist_deltas_aligned = deltas_hist_series.copy()
+
 
     # Удаляем строки, где есть NaN в признаках ИЛИ где есть NaN в дельтах истории
-    valid_indices = hist_df_aligned.dropna(how='any').index.intersection(hist_deltas_aligned.dropna().index)
+    # Создаем булевы маски для NaN в признаках и дельтах
+    nan_in_features = hist_df_aligned.isnull().any(axis=1)
+    nan_in_deltas = hist_deltas_aligned.isnull()
+
+    # Индексы строк, которые НЕ содержат NaN ни в признаках, ни в дельтах
+    valid_indices = hist_df_aligned.index[~(nan_in_features | nan_in_deltas)]
 
     hist_df_aligned_clean = hist_df_aligned.loc[valid_indices]
     hist_deltas_aligned_clean = hist_deltas_aligned.loc[valid_indices]
-
 
     if len(hist_df_aligned_clean) < top_n:
          return np.nan, np.nan, f"Недостаточно чистых исторических данных ({len(hist_df_aligned_clean)} < {top_n}) для анализа схожести"
@@ -204,14 +321,8 @@ def similarity_analysis(X_live_df, X_hist_df, deltas_hist_series, top_n=15):
     scaler = StandardScaler()
     try:
         X_hist_scaled = scaler.fit_transform(hist_df_aligned_clean)
-        # Убедимся, что X_live_df_common имеет ту же форму и колонки, что и hist_df_aligned_clean
-        # перед масштабированием. Если нет, используем только общие колонки еще раз или выведем ошибку.
-        # Предполагаем, что common_cols уже обеспечил одинаковые колонки, но на всякий случай...
-        if not X_live_df_common.columns.equals(hist_df_aligned_clean.columns):
-             logging.error("Несоответствие колонок между X_live_df_common и hist_df_aligned_clean перед масштабированием схожести!")
-             return np.nan, np.nan, "Ошибка сопоставления признаков для схожести"
-
-        x_live_scaled = scaler.transform(X_live_df_common) # X_live_df_common - это одна строка
+        # X_live_df_common - это одна строка, масштабируем ее тем же скейлером
+        x_live_scaled = scaler.transform(X_live_df_common)
 
     except ValueError as e:
         logging.error(f"Ошибка при масштабировании в similarity_analysis: {e}")
@@ -224,13 +335,18 @@ def similarity_analysis(X_live_df, X_hist_df, deltas_hist_series, top_n=15):
     sims = cosine_similarity(X_hist_scaled, x_live_scaled).flatten()
 
     # Indices of the top N similar historical points in the *cleaned and scaled* history data
-    top_indices_in_cleaned_hist = sims.argsort()[-top_n:][::-1]
+    # Handle case where top_n might be larger than available data after cleaning
+    actual_top_n = min(top_n, len(sims))
+    if actual_top_n <= 0:
+         return np.nan, np.nan, "Нет данных для топ-N после чистки и масштабирования"
 
-    # Get the original indices from the full historical data (or from the cleaned data index)
-    # Use the indices from the cleaned data dataframe
+    top_indices_in_cleaned_hist = sims.argsort()[-actual_top_n:][::-1]
+
+    # Get the original indices from the cleaned data index
     original_top_indices = hist_df_aligned_clean.iloc[top_indices_in_cleaned_hist].index
 
     if len(original_top_indices) == 0:
+        # Это условие, по идее, не должно выполняться, если actual_top_n > 0, но на всякий случай
         return np.nan, np.nan, "Не найдено достаточно схожих ситуаций после фильтрации"
 
     # Get the deltas for these original indices from the cleaned deltas series
@@ -245,9 +361,10 @@ def similarity_analysis(X_live_df, X_hist_df, deltas_hist_series, top_n=15):
         std_delta = 0.0
 
     hint = (
-        "Высокий разброс" if std_delta > 0.02 else
-        "Умеренно стабильно" if std_delta > 0.01 else
-        "Стабильный паттерн"
+        "Высокий разброс" if pd.notna(std_delta) and std_delta > 0.02 else
+        "Умеренно стабильно" if pd.notna(std_delta) and std_delta > 0.01 else
+        "Стабильный паттерн" if pd.notna(std_delta) else
+        "Не удалось определить разброс"
     )
     if pd.isna(avg_delta) or pd.isna(std_delta):
         hint = "Не удалось рассчитать статистику схожести"
@@ -260,33 +377,46 @@ def predict_all_tf(save_output_flag, symbol_filter=None, group_filter=None):
     # ----- Новая фильтрация по символу или группе -----
     # >>> ДОБАВЛЕНО согласно патчу
     target_syms = None
+    files_suffix = "all" # Суффикс для файлов результатов по умолчанию
     if symbol_filter:
         target_syms = [symbol_filter.upper()] # Приводим к верхнему регистру для безопасности
         logging.info(f"🛠️ Фильтр по символу: {target_syms[0]}")
+        files_suffix = target_syms[0]
     elif group_filter:
         group_key = group_filter.lower() # Приводим ключ группы к нижнему регистру
         if group_key not in GROUP_MODELS:
+            # Этот случай должен быть обработан в __main__ перед вызовом, но оставим проверку
             logging.error(f"❌ Неизвестная группа символов: '{group_filter}'. Доступные группы: {list(GROUP_MODELS.keys())}")
             return # Выходим из функции, если группа не найдена
         target_syms = GROUP_MODELS[group_key]
         logging.info(f"🛠️ Фильтр по группе: '{group_filter}' ({len(target_syms)} символов)")
+        files_suffix = group_key
     else:
         logging.info("🛠️ Без фильтров по символу/группе (обработка всех доступных).")
+        files_suffix = "all" # Явно устанавливаем суффикс "all"
+
+    # Определяем имена файлов для сохранения с учётом суффикса
+    LATEST_PREDICTIONS_FILE = os.path.join(LOG_DIR_PREDICT, f'latest_predictions_{files_suffix}.csv')
+    TRADE_PLAN_FILE = os.path.join(LOG_DIR_PREDICT, f'trade_plan_{files_suffix}.csv')
 
 
-    logging.info("🚀  Запуск генерации прогнозов...")
+    logging.info(f"🚀  Запуск генерации прогнозов (фильтр: {files_suffix})...")
     all_predictions_data = []
     trade_plan = []
 
     for tf in TIMEFRAMES:
         logging.info(f"\n--- Обработка таймфрейма: {tf} ---")
-        features_path = FEATURES_PATH_TEMPLATE.format(tf=tf)
+        # Модифицируем путь к файлу признаков, чтобы учесть возможный суффикс
+        # Исходя из provided diff в другом задании и контекста, preprocess_features создает файл с суффиксом.
+        features_path = f'data/features_{files_suffix}_{tf}.pkl'
+
         if not os.path.exists(features_path):
             logging.warning(f"⚠️ Файл признаков не найден: {features_path}. Пропуск таймфрейма {tf}.")
             continue
 
         try:
-            df = pd.read_pickle(features_path)
+            # Указываем engine='pyarrow' для ускорения чтения, если pyarrow установлен
+            df = pd.read_pickle(features_path, engine='pyarrow')
         except Exception as e:
             logging.error(f"❌ Не удалось прочитать файл признаков {features_path}: {e}. Пропуск таймфрейма {tf}.")
             continue
@@ -294,6 +424,25 @@ def predict_all_tf(save_output_flag, symbol_filter=None, group_filter=None):
         if df.empty:
             logging.warning(f"⚠️ Файл признаков пуст: {features_path}. Пропуск таймфрейма {tf}.")
             continue
+
+        # Символы в df уже отфильтрованы preprocess_features, если файл с суффиксом.
+        # Проверим, что символы в загруженном df соответствуют target_syms (если он задан)
+        available_symbols_in_data = df['symbol'].unique().tolist()
+        if target_syms is not None:
+             # Это проверка консистентности. Если preprocess_features работает правильно,
+             # available_symbols_in_data должно быть подмножеством target_syms.
+             symbols_in_file_but_not_in_filter = [sym for sym in available_symbols_in_data if sym not in target_syms]
+             symbols_in_filter_but_not_in_file = [sym for sym in target_syms if sym not in available_symbols_in_data]
+
+             if symbols_in_file_but_not_in_filter:
+                  logging.warning(f"⚠️ Файл признаков {features_path} содержит неожиданные символы: {symbols_in_file_but_not_in_filter}. Они будут проигнорированы.")
+                  # Удаляем их из df на всякий случай
+                  df = df[df['symbol'].isin(target_syms)]
+
+             if symbols_in_filter_but_not_in_file:
+                  logging.warning(f"⚠️ Символы из фильтра отсутствуют в файле признаков {features_path}: {symbols_in_filter_but_not_in_file}. Пропускаем их.")
+                  # Эти символы просто не будут найдены при итерации ниже
+
 
         features_list_path = f"models/{tf}_features_selected.txt"
         if not os.path.exists(features_list_path):
@@ -313,31 +462,28 @@ def predict_all_tf(save_output_flag, symbol_filter=None, group_filter=None):
         # Model loading is now per-symbol, so it's moved inside the symbol loop.
         # The old loading location and logging for TP-hit classes per TF is removed from here.
 
-        # Получаем список уникальных символов из данных
+        # Получаем список уникальных символов из *отфильтрованных* или *загруженных* данных
+        # Теперь df содержит только те символы, которые нужны для этого фильтра.
         available_symbols_in_data = df['symbol'].unique()
 
         # Определяем, какие символы мы будем обрабатывать в этом TF
-        symbols_to_process_this_tf = []
-        if target_syms is None:
-             # Нет фильтра, обрабатываем все символы, для которых есть данные
-             symbols_to_process_this_tf = available_symbols_in_data
-        else:
-             # Есть фильтр, обрабатываем только символы из target_syms, для которых есть данные
-             symbols_to_process_this_tf = [sym for sym in target_syms if sym in available_symbols_in_data]
-             missing_filtered_symbols = [sym for sym in target_syms if sym not in available_symbols_in_data]
-             if missing_filtered_symbols:
-                 logging.warning(f"⚠️ Данные для символов из фильтра отсутствуют на {tf}: {missing_filtered_symbols}. Пропускаем их.")
+        # Этот список уже фактически определен загруженным файлом и предыдущей (опциональной) фильтрацией
+        symbols_to_process_this_tf = available_symbols_in_data.tolist()
+
+        # Проверяем, что в списке symbol_list (если он был задан) есть хотя бы один символ,
+        # который присутствует в текущем df.
+        # Это уже не строгая необходимость, т.к. мы итерируемся по symbols_to_process_this_tf,
+        # который берется из загруженного df, который уже отфильтрован (или не отфильтрован).
+        # Оставим только проверку на пустой список для обработки
+        if not symbols_to_process_this_tf:
+             logging.info(f"🤷 Нет символов для обработки на {tf} из загруженного файла признаков {features_path}.")
+             continue # Переходим к следующему таймфрейму
 
 
         # Сортируем символы для предсказуемого вывода
         symbols_to_process_this_tf.sort()
 
-        if not symbols_to_process_this_tf:
-             logging.info(f"🤷 Нет символов для обработки на {tf} после применения фильтра или из-за отсутствия данных.")
-             continue # Переходим к следующему таймфрейму
-
         for symbol in symbols_to_process_this_tf:
-            # Проверка фильтра больше не нужна здесь, так как список symbols_to_process_this_tf уже отфильтрован
 
             df_sym = df[df['symbol'] == symbol].sort_values('timestamp').copy()
             # Пустой df_sym не должен возникать тут, т.к. символ взят из available_symbols_in_data,
@@ -364,6 +510,11 @@ def predict_all_tf(save_output_flag, symbol_filter=None, group_filter=None):
                 continue  # Skip this symbol for this tf
 
             # Получаем последнюю строку для прогноза и остальное для истории
+            # Убедимся, что в df_sym достаточно строк (минимум 1 для прогноза, плюс история для схожести)
+            if len(df_sym) < 2: # Минимум 2 строки нужно: 1 для X_live, 1 для истории (хотя бы одна)
+                 logging.warning(f"⚠️ Недостаточно данных ({len(df_sym)} строк) для {symbol} {tf}. Пропуск.")
+                 continue
+
             row_df = df_sym.iloc[-1:].copy()
             hist_df_full = df_sym.iloc[:-1].copy()
 
@@ -381,15 +532,18 @@ def predict_all_tf(save_output_flag, symbol_filter=None, group_filter=None):
                 continue
 
             X_live = row_df[feature_cols_from_file]
-            if X_live.isnull().values.any():
-                nan_features = X_live.columns[X_live.isnull().any()].tolist()
-                logging.warning(f"⚠️ В X_live для {symbol} {tf} есть NaN в признаках: {nan_features}. Пропуск символа {symbol} на этом таймфрейме.")
-                continue
+            # Проверка на NaN в X_live уже делается ниже, но можно усилить тут
+            # if X_live.isnull().values.any():
+            #     nan_features = X_live.columns[X_live.isnull().any()].tolist()
+            #     logging.warning(f"⚠️ В X_live для {symbol} {tf} есть NaN в признаках: {nan_features}. Пропуск символа {symbol} на этом таймфрейме.")
+            #     continue
+
 
             # Анализ схожести с историей
             avg_delta_similar, std_delta_similar, similarity_hint = np.nan, np.nan, "Нет данных для анализа схожести"
             if 'delta' not in hist_df_full.columns:
-                logging.debug(f"Столбец 'delta' отсутствует в исторических данных hist_df_full для {symbol} {tf}.")
+                logging.debug(f"Столбец 'delta' отсутствует в исторических данных hist_df_full для {symbol} {tf}. Анализ схожести невозможен.")
+                similarity_hint = "Отсутствует столбец 'delta' в истории"
             else:
                  # Проверяем наличие всех необходимых признаков И столбца 'delta' в исторических данных
                 required_hist_cols = feature_cols_from_file + ['delta']
@@ -402,14 +556,18 @@ def predict_all_tf(save_output_flag, symbol_filter=None, group_filter=None):
                     hist_for_sim_features = hist_df_full[feature_cols_from_file].copy()
                     hist_for_sim_deltas = hist_df_full['delta'].copy()
 
-                    # Чистка от NaN производится внутри similarity_analysis
-
-                    # Ensure enough data for similarity analysis - moved check inside similarity_analysis
+                    # Чистка от NaN и проверка на sufficient data происходит внутри similarity_analysis
                     avg_delta_similar, std_delta_similar, similarity_hint = similarity_analysis(
-                        X_live, hist_for_sim_features, hist_for_sim_deltas, top_n=min(15, len(hist_for_sim_features)-1)) # top_n не больше, чем строк-1
+                        X_live, hist_for_sim_features, hist_for_sim_deltas, top_n=15) # top_n=15
 
 
             # Прогнозирование
+            # Проверяем на NaN в X_live еще раз перед подачей в модель
+            if X_live.isnull().values.any():
+                 nan_features = X_live.columns[X_live.isnull().any()].tolist()
+                 logging.warning(f"⚠️ В X_live для {symbol} {tf} есть NaN в признаках: {nan_features}. Пропуск символа {symbol} на этом таймфрейме.")
+                 continue # Пропустить этот символ/ТФ
+
             try:
                 proba_raw = model_class.predict_proba(X_live)[0]
             except Exception as e:
@@ -447,10 +605,14 @@ def predict_all_tf(save_output_flag, symbol_filter=None, group_filter=None):
 
             try:
                 predicted_volatility = model_vol.predict(X_live)[0]
-                # Проверяем, что предсказанная волатильность положительна
-                if predicted_volatility < 0:
-                    logging.warning(f"⚠️ Предсказанная волатильность отрицательна ({predicted_volatility:.6f}) для {symbol} {tf}. Использовано 0.")
+                # Проверяем, что предсказанная волатильность положительна и не близка к нулю
+                if pd.notna(predicted_volatility) and predicted_volatility < 1e-9:
+                    logging.warning(f"⚠️ Предсказанная волатильность очень близка к нулю ({predicted_volatility:.6f}) для {symbol} {tf}. Использовано 0.")
                     predicted_volatility = 0.0
+                elif pd.notna(predicted_volatility) and predicted_volatility < 0:
+                     logging.warning(f"⚠️ Предсказанная волатильность отрицательна ({predicted_volatility:.6f}) для {symbol} {tf}. Использовано 0.")
+                     predicted_volatility = 0.0
+
             except Exception as e:
                  logging.error(f"❌ Ошибка при model_vol.predict для {symbol} {tf}: {e}. Устанавливаю predicted_volatility в NaN.")
                  predicted_volatility = np.nan
@@ -476,7 +638,11 @@ def predict_all_tf(save_output_flag, symbol_filter=None, group_filter=None):
                          # Fallback: Если classes_ нет или не содержит 1, но predict_proba вернул >1 значение,
                          # предполагаем бинарную классификацию и класс 1 находится по индексу 1
                          logging.warning(f"⚠️ Класс '1' не найден в model_tp_hit.classes_ ({model_tp_classes if model_tp_classes is not None else 'N/A'}) для {symbol} {tf}. Использую вероятность по индексу 1.")
-                         tp_hit_proba = tp_hit_proba_all_classes[1] # Предполагаем, что индекс 1 соответствует классу 1
+                         if len(tp_hit_proba_all_classes) > 1:
+                            tp_hit_proba = tp_hit_proba_all_classes[1] # Предполагаем, что индекс 1 соответствует классу 1
+                         else:
+                             logging.warning(f"⚠️ Недостаточно вероятностей в predict_proba TP-hit модели ({len(tp_hit_proba_all_classes)}) для {symbol} {tf}. TP Hit% будет NaN.")
+                             tp_hit_proba = np.nan
                     else:
                          logging.warning(f"⚠️ Модель TP-hit для {symbol} {tf} не имеет класса '1' и predict_proba вернула {len(tp_hit_proba_all_classes)} значений. Невозможно определить tp_hit_proba.")
                          # tp_hit_proba остается np.nan
@@ -534,12 +700,16 @@ def predict_all_tf(save_output_flag, symbol_filter=None, group_filter=None):
             if direction != 'none' and confidence >= TRADE_PLAN_CONFIDENCE_THRESHOLD:
                  if pd.isna(prediction_entry['tp_hit_proba']) or prediction_entry['tp_hit_proba'] >= TRADE_PLAN_TP_HIT_THRESHOLD:
                      rr_value = np.nan # Инициализируем как NaN
-                     if not pd.isna(sl) and not pd.isna(tp):
-                         # Убедимся, что SL не равен Entry, чтобы избежать деления на ноль
+                     if pd.notna(sl) and pd.notna(tp):
+                         # Убедимся, что SL не равен Entry (с учетом округления или очень маленькой разницы)
                          if abs(entry_price - sl) > 1e-9:
-                             rr_value = round(abs(tp - entry_price) / abs(entry_price - sl), 2)
+                             try:
+                                rr_value = round(abs(tp - entry_price) / abs(entry_price - sl), 2)
+                             except ZeroDivisionError:
+                                 logging.warning(f"⚠️ Деление на ноль при расчете RR для {symbol} {tf} (Entry={entry_price}, SL={sl}).")
+                                 rr_value = np.nan
                          else:
-                             logging.warning(f"⚠️ SL равен цене входа для {symbol} {tf}. Невозможно рассчитать RR.")
+                             logging.warning(f"⚠️ SL очень близко к цене входа для {symbol} {tf} (Entry={entry_price}, SL={sl}). Невозможно рассчитать RR.")
 
 
                      trade_plan.append({
@@ -549,7 +719,8 @@ def predict_all_tf(save_output_flag, symbol_filter=None, group_filter=None):
                          'tp_hit_proba': tp_hit_proba
                      })
                  else:
-                     logging.debug(f"Пропуск {symbol} {tf} для торгового плана: TP Hit ({prediction_entry['tp_hit_proba']:.1%}) ниже порога {TRADE_PLAN_TP_HIT_THRESHOLD:.1%}.")
+                     tp_hit_display = f"{prediction_entry['tp_hit_proba']:.1%}" if pd.notna(prediction_entry['tp_hit_proba']) else "N/A"
+                     logging.debug(f"Пропуск {symbol} {tf} для торгового плана: TP Hit ({tp_hit_display}) ниже порога {TRADE_PLAN_TP_HIT_THRESHOLD:.1%}.")
             else:
                  logging.debug(f"Пропуск {symbol} {tf} для торгового плана: Направление {direction} или уверенность ({confidence:.3f}) ниже порога {TRADE_PLAN_CONFIDENCE_THRESHOLD:.3f}.")
 
@@ -611,7 +782,7 @@ def predict_all_tf(save_output_flag, symbol_filter=None, group_filter=None):
             except Exception as e:
                 logging.error(f"❌ Не удалось сохранить {LATEST_PREDICTIONS_FILE}: {e}")
         else:
-            logging.info("🤷 Нет данных для сохранения в LATEST_PREDICTIONS_FILE.")
+            logging.info(f"🤷 Нет данных для сохранения в {LATEST_PREDICTIONS_FILE}.")
 
         if trade_plan:
             df_trade_plan = pd.DataFrame(trade_plan)
@@ -634,7 +805,7 @@ def predict_all_tf(save_output_flag, symbol_filter=None, group_filter=None):
                 except Exception as e:
                     logging.error(f"❌ Не удалось сохранить {TRADE_PLAN_FILE}: {e}")
             else:
-                logging.info("🤷 Торговый план пуст, файл не создан.")
+                logging.info(f"🤷 Торговый план пуст, файл {TRADE_PLAN_FILE} не создан.")
         else:
             logging.info("🤷 Нет данных для торгового плана.")
 
@@ -695,23 +866,44 @@ def predict_all_tf(save_output_flag, symbol_filter=None, group_filter=None):
 
 
 if __name__ == '__main__':
+    # >>> ИЗМЕНЕНО: Новый парсер и логика определения фильтров из патча
     parser = argparse.ArgumentParser(description="Генерация прогнозов на основе обученных моделей.")
-    parser.add_argument('--save', action='store_true', help="Сохранять результаты прогнозов в CSV файлы.")
-    # >>> ДОБАВЛЕНО согласно патчу
-    parser.add_argument('--symbol',       type=str, help="Один символ для анализа, напр. BTCUSDT")
-    parser.add_argument('--symbol-group', type=str, help="Группа символов, напр. top8 или meme")
+    parser.add_argument('--save',         action='store_true', help="Сохранять результаты прогнозов в CSV файлы.")
+    # Обновляем help текст согласно патчу
+    parser.add_argument('--symbol',       type=str, help="Один символ для анализа, напр. BTCUSDT (или группа, если совпадает с top8/meme/defi)")
+    parser.add_argument('--symbol-group', type=str, help="Группа символов, напр. top8 или meme (игнорируется, если указан --symbol, совпадающий с группой)") # Обновляем help для ясности
     args = parser.parse_args()
 
-    # >>> ИЗМЕНЕНО: Передача аргументов в predict_all_tf
-    # Вместо глобальных переменных, передаем фильтры явно в функцию
+    # Разводим в symbol_filter vs group_filter согласно логике патча
+    symbol_filter = None
+    group_filter  = None
+
+    if args.symbol and args.symbol_group:
+        logging.error("❌ Нельзя указывать одновременно --symbol и --symbol-group.")
+        sys.exit(1)
+    elif args.symbol_group:
+        group_filter = args.symbol_group.lower() # Всегда приводим группу к нижнему регистру
+        # Проверка существования группы теперь здесь, перед вызовом predict_all_tf
+        if group_filter not in GROUP_MODELS:
+             logging.error(f"❌ Неизвестная группа символов: '{args.symbol_group}'. Доступные группы: {list(GROUP_MODELS.keys())}")
+             sys.exit(1)
+
+    elif args.symbol:
+        # если в --symbol передано имя известной группы (независимо от регистра) — считаем это group_filter
+        symbol_lower = args.symbol.lower()
+        if symbol_lower in GROUP_MODELS:
+            group_filter = symbol_lower
+            logging.info(f"Interpreting --symbol '{args.symbol}' as group '{group_filter}'.")
+        else:
+            symbol_filter = args.symbol.upper() # Всегда приводим символ к верхнему регистру
+
+
     try:
-        # Проверяем, чтобы не были указаны оба фильтра одновременно
-        if args.symbol and args.symbol_group:
-            logging.error("❌ Нельзя указывать одновременно --symbol и --symbol-group.")
-            sys.exit(1)
-
-        predict_all_tf(args.save, symbol_filter=args.symbol, group_filter=args.symbol_group)
-
+        predict_all_tf(
+            args.save,
+            symbol_filter=symbol_filter,
+            group_filter=group_filter
+        )
     except KeyboardInterrupt:
         print("\n[PredictAll] 🛑 Генерация прогнозов прервана пользователем (Ctrl+C).")
         sys.exit(130)

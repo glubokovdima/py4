@@ -283,41 +283,28 @@ def main_menu():
                          print("ПОЛНЫЙ ПЕРЕСБОР прерван на одном из этапов.")
 
             elif choice == '8':
+                print_header("Генерация прогнозов")
+                group_or_symbol = input(
+                    f"Введите группу ({'/'.join(SYMBOL_GROUPS)}) или символ (например: BTCUSDT),\n"
+                    "или оставьте пустым для всех: "
+                ).strip()
+                # Сформируем аргументы
+                predict_args = ["--save"]
 
-            print_header("Генерация прогнозов")
+                description_suffix = "для всех пар" # Default description
+                if group_or_symbol:
+                    group_or_symbol_lower = group_or_symbol.lower()
+                    if group_or_symbol_lower in SYMBOL_GROUPS:
+                        predict_args += ["--symbol-group", group_or_symbol_lower]
+                        description_suffix = f"для группы {group_or_symbol_lower}"
+                    else:
+                        predict_args += ["--symbol", group_or_symbol.upper()] # Symbols are typically uppercase
+                        description_suffix = f"для символа {group_or_symbol.upper()}"
 
-
-
-
-
-                            +    group_or_symbol = input(
-
-                                +        "Введите группу (top8/meme/defi) или символ (например: BTCUSDT),\n"
-
-
-                                +).strip()
-
-                            +    predict_args = ["--save"]
-
-                            +
-                            if group_or_symbol:
-
-                            +
-                            if group_or_symbol.lower() in SYMBOL_GROUPS:
-
-                            +            predict_args += ["--symbol-group", group_or_symbol.lower()]
-
-                            + else:
-
-            +            predict_args += ["--symbol", group_or_symbol.upper()]
-
-            run_script(
-
-                + [PYTHON_EXECUTABLE, "predict_all.py"] + predict_args,
-
-                +        f"Генерация прогнозов для {group_or_symbol or 'всех пар'}"
-
-            )
+                run_script(
+                    [PYTHON_EXECUTABLE, "predict_all.py"] + predict_args,
+                    f"Генерация прогнозов {description_suffix}"
+                )
 
             elif choice == '9':
                 print_header("Запуск бэктеста")
