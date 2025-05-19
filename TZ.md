@@ -245,3 +245,73 @@ calib_short.fit(X_val, y_short_val)
 
 ---
 
+
+
+
+
+---
+
+## 1. Признак волатильности по GARCH
+
+**Почему:** GARCH-модели хорошо захватывают «тяжёлые» хвосты и кластеризацию волатильности, добавив прогноз σ² вы даёте модели информацию о текущем режиме рынка.
+**Пример кода (в `preprocess_features.py`):**
+
+```python
+from arch import arch_model
+
+# допустим, у вас есть Series доходностей:
+rets = df['close'].pct_change().dropna() * 100  # в % годовых
+
+# обучаем простую GARCH(1,1) на последних 1000 точках
+garch = arch_model(rets[-1000:], vol='Garch', p=1, q=1, dist='normal')
+res   = garch.fit(disp='off')
+
+# прогноз волатильности на 1 шаг вперёд
+forecast = res.forecast(horizon=1)
+df.loc[rets.index, 'garch_vol'] = forecast.variance.values[-1, 0]**0.5 / 100
+```
+
+После этого в `feature_columns` добавьте `'garch_vol'`.
+
+---
+
+## 2. Динамические стоп-лосс/тейк-профит на основе ATR
+
+**Почему:** вместо жёстких фиксированных уровней стоп-лосса/тейк-профита используйте ATR — модель точнее оценивает масштаб «шумов» и избегает раннего выбивания.
+**Пример кода (в вашей торговой логике):**
+
+```python
+# в predict_all.py или модуле исполнения сделок
+high_low = df['high'] - df['low']
+high_close = (df['high'] - df['close'].shift()).abs()
+low_close  = (df['low']  - df['close'].shift()).abs()
+atr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1).rolling(14).mean()
+
+# при сигнале LONG
+stop_loss  = price_entry - 1.5 * atr.iloc[-1]
+take_profit= price_entry + 2.0 * atr.iloc[-1]
+```
+
+Настройте коэффициенты (1.5, 2.0) по back-test’у.
+
+---
+
+## 3. Скользящая корреляция между инструментами
+
+**Почему:** если несколько пар движутся синхронно, открытие сразу по всем увеличит риски; фильтр на корреляцию позволит избежать «скопления» позиций.
+**Пример (группа топ-8 инструментов):**
+
+```python
+# df_all — DataFrame с ценами закрытия топ-8 пар, столбцы — символы
+returns = df_all.pct_change()
+rolling_corr = returns['BTCUSDT'].rolling(60).corr(returns['ETHUSDT'])
+
+# при расчёте сигнала отсекайте ситуации, 
+# когда rolling_corr > 0.8 (слишком сильная синхронность)
+if signal == 'LONG' and rolling_corr.iloc[-1] > 0.8:
+    signal = 'NEUTRAL'
+```
+
+
+
+---
