@@ -132,7 +132,7 @@ def compute_final_delta(delta_model, delta_history, sigma_history):
     # Пример: вес истории = 1 / sigma_history, вес модели = константа
     # Нормализация весов: w_hist = (1/sigma_history) / ((1/sigma_history) + C), w_model = C / ((1/sigma_history) + C)
     # Где C - константа, регулирующая базовый "доверие" к модели
-    # Или просто линейно: w_hist = max_weight - (sigma_history - min_sigma) / (max_sigma - min_sigma) * (max_weight - min_weight)
+    # Или просто линейno: w_hist = max_weight - (sigma_history - min_sigma) / (max_sigma - min_sigma) * (max_weight - min_weight)
     # Где min_sigma, max_sigma, min_weight, max_weight - настраиваемые параметры.
 
     # Вернемся к простой линейной интерполяции весов из примера
@@ -467,14 +467,27 @@ def predict_all_tf(save_output_flag, symbol_filter=None, group_filter=None):
 
             if df.empty:
                  logging.info(f"🤷 После фильтрации по символам/группе нет данных на {tf}. Пропуск таймфрейма {tf}.")
-                 continue # Переходим к следующему таймфрейму
+                 continue # Переходим к следующему таймрейму
 
             logging.info(f"Фильтрация DataFrame: {before_filter_count} → {after_filter_count} строк для TF {tf}.")
 
 
         # >>> КОНЕЦ БЛОКА ФИЛЬТРАЦИИ DATAFRAME (модифицированного)
 
+        # Обновляем путь к файлу признаков для моделей - он зависит от files_suffix и tf
         features_list_path = f"models/{files_suffix}_{tf}_features_selected.txt"
+
+        # Fallback для features_list_path на случай, если файл признаков был общим,
+        # а файл выбранных признаков - с суффиксом "all".
+        # Это может произойти, если признаки для "all" были сгенерированы в один файл,
+        # а выбранные признаки для моделей "all" были сохранены с суффиксом "all".
+        if not os.path.exists(features_list_path) and files_suffix != "all":
+             fallback_features_list_path = f"models/all_{tf}_features_selected.txt"
+             if os.path.exists(fallback_features_list_path):
+                 features_list_path = fallback_features_list_path
+                 logging.debug(f"Использую fallback файл списка признаков: {fallback_features_list_path}")
+
+
         if not os.path.exists(features_list_path):
             logging.error(
                 f"❌ Файл со списком признаков '{features_list_path}' не найден. Невозможно безопасно продолжить для {tf}. Пропуск.")
@@ -567,7 +580,7 @@ def predict_all_tf(save_output_flag, symbol_filter=None, group_filter=None):
             # Проверка на NaN в X_live уже делается ниже, но можно усилить тут
             # if X_live.isnull().values.any():
             #     nan_features = X_live.columns[X_live.isnull().any()].tolist()
-            #     logging.warning(f"⚠️ В X_live для {symbol} {tf} есть NaN в признаках: {nan_features}. Пропуск символа {symbol} на этом таймфрейме.")
+            #     logging.warning(f"⚠️ В X_live для {symbol} {tf} есть NaN в признаках: {nan_features}. Пропуск символа {symbol} на этом тайmфрейме.")
             #     continue
 
 
@@ -618,7 +631,13 @@ def predict_all_tf(save_output_flag, symbol_filter=None, group_filter=None):
 
             # Находим предсказанный класс (используем классы из модели)
             pred_class_label = model_classes[proba_raw.argmax()]
-            signal = pred_class_label # Сигнал теперь напрямую из класса модели
+            # Преобразуем числовой сигнал 0/1 → текстовый
+            if pred_class_label == 1:
+                signal = "LONG"
+            elif pred_class_label == 0:
+                signal = "SHORT"
+            else:
+                signal = str(pred_class_label)  # или 'NEUTRAL', если есть третий класс
 
             # Расчет уверенности: разница между лучшей и второй лучшей вероятностью
             if len(proba_raw) < 2:
@@ -721,6 +740,14 @@ def predict_all_tf(save_output_flag, symbol_filter=None, group_filter=None):
                 'tp_hit_proba': tp_hit_proba,
                 'error': None # Поле для будущих ошибок по символу/ТФ
             }
+            # >>> ДОБАВЛЕНО согласно патчу: Поле is_trade_worthy
+            prediction_entry['is_trade_worthy'] = (
+                prediction_entry['direction'] != 'none' and
+                prediction_entry['confidence_score'] > 0.08 and
+                abs(prediction_entry['delta_final']) > 0.003 and
+                prediction_entry['signal'] in ['UP', 'DOWN', 'STRONG UP', 'STRONG DOWN'] and
+                (pd.isna(prediction_entry['tp_hit_proba']) or prediction_entry['tp_hit_proba'] > 0.55)
+            )
             all_predictions_data.append(prediction_entry)
 
             # Формирование торгового плана
@@ -780,6 +807,8 @@ def predict_all_tf(save_output_flag, symbol_filter=None, group_filter=None):
                 'signal_strength': r_item['signal_strength'], 'conflict': r_item['conflict'],
                 'confidence_hint': r_item['confidence_hint'],
                 'similarity_hint': r_item['similarity_hint'],
+                # >>> ДОБАВЛЕНО согласно патчу: Поле is_trade_worthy для CSV
+                'trade_worthy': r_item['is_trade_worthy'],
             }
             # Добавляем вероятности классов. Используем ключи из proba_dict_ordered,
             # которые должны соответствовать TARGET_CLASS_NAMES
@@ -795,7 +824,8 @@ def predict_all_tf(save_output_flag, symbol_filter=None, group_filter=None):
             'symbol', 'tf', 'timestamp', 'signal', 'confidence_score', 'tp_hit_proba',
             'predicted_delta', 'avg_delta_similar', 'std_delta_similar', 'delta_final',
             'predicted_volatility', 'entry', 'sl', 'tp', 'direction',
-            'signal_strength', 'conflict', 'confidence_hint', 'similarity_hint'
+            'signal_strength', 'conflict', 'confidence_hint', 'similarity_hint',
+            'trade_worthy', # >>> ДОБАВЛЕНО: Добавляем trade_worthy в порядок колонок
         ]
         csv_columns_order.extend(proba_dict_keys_order) # Добавляем ключи типа 'STRONG DOWN', 'DOWN' и т.д.
 
@@ -841,10 +871,32 @@ def predict_all_tf(save_output_flag, symbol_filter=None, group_filter=None):
         else:
             logging.info("🤷 Нет данных для торгового плана.")
 
+        # >>> ДОБАВЛЕНО согласно патчу: Сохранение файла alerts.txt
+        alerts_filename = os.path.join(LOG_DIR_PREDICT, f"alerts_{files_suffix}.txt")
+
+        with open(alerts_filename, "w", encoding="utf-8") as alert_file:
+            for row in all_predictions_data:
+                if row.get('is_trade_worthy'): # Проверяем новое поле
+                    # Форматируем строку алерта
+                    alert_line = (
+                        f"{row['symbol']} {row['tf']} {row['signal_strength'].replace(' Сильный','🟢').replace(' Умеренный','🟡')} "
+                        f"{row['direction'].upper()} Δ:{row['delta_final']:.2%} " # Добавил метку Δ:
+                        f"Conf:{row['confidence_score']:.2f} " # Добавил метку Conf:
+                        f"TP:{row['tp_hit_proba']:.1%}\n" if pd.notna(row['tp_hit_proba'])
+                        else f"{row['symbol']} {row['tf']} {row['signal_strength'].replace(' Сильный','🟢').replace(' Умеренный','🟡')} "
+                             f"{row['direction'].upper()} Δ:{row['delta_final']:.2%} "
+                             f"Conf:{row['confidence_score']:.2f} TP:N/A\n"
+                    )
+                    alert_file.write(alert_line)
+
+
+        logging.info(f"📣 Alert-файл сохранён: {alerts_filename}")
+
+
     # Вывод в консоль
     if all_predictions_data:
         headers_tabulate = ["TF", "Timestamp", "Сигнал", "Conf.", "ΔModel", "ΔHist", "σHist", "ΔFinal", "Конф?", "Сила",
-                            "TP Hit%"]
+                            "TP Hit%", "Trade?"] # Добавил "Trade?" в заголовки
         grouped_by_symbol = {}
         for row_data_item in all_predictions_data:
             grouped_by_symbol.setdefault(row_data_item['symbol'], []).append(row_data_item)
@@ -880,7 +932,8 @@ def predict_all_tf(save_output_flag, symbol_filter=None, group_filter=None):
                     "❗" if r_tab['conflict'] else " ",
                     r_tab['signal_strength'].replace(" Сильный", "🟢").replace(" Умеренный", "🟡").replace(" Слабый",
                                                                                                          "⚪"),
-                    f"{r_tab['tp_hit_proba']:.1%}" if pd.notna(r_tab['tp_hit_proba']) else "N/A"
+                    f"{r_tab['tp_hit_proba']:.1%}" if pd.notna(r_tab['tp_hit_proba']) else "N/A",
+                    "✅" if r_tab.get('is_trade_worthy') else "❌" # Отображаем trade_worthy
                 ])
             print(f"\n📊  Прогноз по символу: {symbol_key}")
             try:
@@ -892,6 +945,57 @@ def predict_all_tf(save_output_flag, symbol_filter=None, group_filter=None):
                 print("Не удалось отформатировать таблицу. Данные:")
                 for row in table_data_tabulate:
                     print(row)
+
+        # >>> ДОБАВЛЕНО согласно патчу: Блок вывода ТОП СИГНАЛОВ
+        print("\n📈 ТОП СИГНАЛЫ (Сильные и Уверенные)")
+        top_signals = []
+
+        for row in all_predictions_data:
+            # Используем criteria for TOP SIGNALS from the patch
+            if (
+                row['direction'] != 'none'
+                and row['signal_strength'] in ['🟢 Сильный', '🟡 Умеренный']
+                and row['confidence_score'] > 0.05
+                and pd.notna(row['delta_final']) and abs(row['delta_final']) > 0.002 # Добавил проверку pd.notna
+            ):
+                top_signals.append({
+                    'Symbol': row['symbol'],
+                    'TF': row['tf'],
+                    'Direction': row['direction'].upper(),
+                    'ΔFinal': f"{row['delta_final']:.2%}",
+                    'Conf.': f"{row['confidence_score']:.2f}",
+                    'Сила': row['signal_strength'].replace(" Сильный", "🟢").replace(" Умеренный", "🟡").replace("⚪ Слабый", "⚪"), # Убедимся, что слабый тоже обработан, хотя в фильтре его нет
+                    'TP Hit%': f"{row['tp_hit_proba']:.1%}" if pd.notna(row['tp_hit_proba']) else "N/A",
+                    'Trade?': "✅" if row.get('is_trade_worthy') else "❌" # Добавляем trade_worthy в топ сигналы
+                })
+
+        # Дополнительная сортировка топ сигналов (опционально)
+        # Сначала по силе (Сильный > Умеренный), затем по уверенности, затем по TF
+        strength_order = {'🟢 Сильный': 0, '🟡 Умеренный': 1}
+        if top_signals:
+            try:
+                top_signals = sorted(top_signals,
+                                     key=lambda x: (strength_order.get(x['Сила'], 99), # Сортировка по силе
+                                                    -float(x['Conf.'] if x['Conf.'] != 'N/A' else 0), # Сортировка по убыванию уверенности
+                                                    TIMEFRAMES.index(x['TF']) if x['TF'] in TIMEFRAMES else float('inf') # Сортировка по TF
+                                                   ))
+            except Exception as e:
+                 logging.warning(f"Ошибка при сортировке топ сигналов: {e}")
+                 # Если сортировка не удалась, оставим как есть
+
+
+        if top_signals:
+            try:
+                print(tabulate(top_signals, headers="keys", tablefmt="pretty"))
+            except Exception as e:
+                 logging.error(f"❌ Ошибка при выводе таблицы ТОП СИГНАЛОВ: {e}")
+                 # Попробуем вывести просто данные, если tabulate не работает
+                 print("Не удалось отформатировать таблицу ТОП СИГНАЛОВ. Данные:")
+                 for row in top_signals:
+                     print(row)
+
+        else:
+            print("🤷 Нет сильных сигналов по текущим условиям.")
 
 
     logging.info("✅  Процесс генерации прогнозов завершён.")
