@@ -3,13 +3,17 @@ import subprocess
 import sys
 import os
 import shutil
-import argparse  # Для CORE_TIMEFRAMES, если они будут в отдельном конфиге
+import argparse
 
 # --- Конфигурация ---
 PYTHON_EXECUTABLE = sys.executable
 # Таймфреймы можно вынести в общий конфигурационный файл или определить здесь
 # Для примера, возьмем из mini_update_binance_data.py (но лучше иметь один источник истины)
 CORE_TIMEFRAMES_LIST = ['1m', '5m', '15m', '30m', '1h', '4h', '1d']
+
+# Допустимые группы символов для --symbol-group
+# >>> ДОБАВЛЕНО согласно патчу
+SYMBOL_GROUPS = ['top8', 'meme', 'defi']
 
 # Директории
 MODELS_DIR = "models"
@@ -31,20 +35,25 @@ def run_script(command_list, description):
     print(f"\n⏳  Запуск: {description}...")
     print(f"    Команда: {' '.join(command_list)}")
     try:
-        result = subprocess.run(command_list, check=False)
+        # Использование capture_output=True и text=True может помочь при отладке,
+        # но для простого проброса вывода дочернего процесса в консоль лучше оставить как есть
+        # result = subprocess.run(command_list, check=False, capture_output=True, text=True)
+        result = subprocess.run(command_list, check=False) # check=False позволяет обработать код возврата вручную
         if result.returncode == 0:
             print(f"✅  Успешно: {description}")
-        elif result.returncode == 130:
+        elif result.returncode == 130: # Код 130 обычно означает прерывание по Ctrl+C
             print(f"🔶  Прервано пользователем: {description}")
         else:
             print(f"❌  Ошибка (код {result.returncode}): {description}")
         return result.returncode
     except FileNotFoundError:
         print(f"❌  Ошибка: Команда не найдена. Убедитесь, что Python доступен и скрипт '{command_list[1]}' существует.")
-        return -1
+        return -1 # Возвращаем код ошибки
     except Exception as e:
         print(f"❌  Непредвиденная ошибка при выполнении '{description}': {e}")
-        return -1
+        import traceback
+        traceback.print_exc() # Для детальной информации об ошибке
+        return -1 # Возвращаем код ошибки
 
 
 def select_timeframes_interactive(prompt_message="Выберите таймфреймы"):
@@ -72,6 +81,8 @@ def select_timeframes_interactive(prompt_message="Выберите таймфр�
         if not selected_tfs:
             print("Не выбрано ни одного корректного таймфрейма. Попробуйте еще раз.")
             continue
+        # Сортируем выбранные TF для предсказуемого порядка
+        selected_tfs.sort(key=lambda x: CORE_TIMEFRAMES_LIST.index(x))
         print(f"Выбраны таймфреймы: {', '.join(selected_tfs)}")
         return selected_tfs
 
@@ -93,7 +104,8 @@ def clear_training_artifacts_interactive():
         for dir_to_clear, description in [(MODELS_DIR, "моделей"), (LOGS_DIR, "логов")]:
             if os.path.exists(dir_to_clear):
                 try:
-                    for item in os.listdir(dir_to_clear):  # Удаляем содержимое, а не саму папку, если это важно для git
+                    # Удаляем только содержимое
+                    for item in os.listdir(dir_to_clear):
                         item_path = os.path.join(dir_to_clear, item)
                         if os.path.isfile(item_path):
                             os.remove(item_path)
@@ -101,24 +113,29 @@ def clear_training_artifacts_interactive():
                             shutil.rmtree(item_path)
                     print(f"    Содержимое директории {description} '{dir_to_clear}' очищено.")
                 except Exception as e:
-                    print(f"    Не удалось очистить директорию {dir_to_clear}: {e}")
+                    print(f"    Не удалось очистить содержимое директории {dir_to_clear}: {e}")
             else:
                 print(f"    Директория {dir_to_clear} не найдена (пропущено).")
-            os.makedirs(dir_to_clear, exist_ok=True)  # Создаем заново, если была удалена или не существовала
+            # Убедимся, что директория существует после очистки содержимого (если она была пустой или не существовала)
+            os.makedirs(dir_to_clear, exist_ok=True)
 
         if os.path.exists(DATA_FEATURES_DIR):
             cleaned_feature_files = 0
-            for item in os.listdir(DATA_FEATURES_DIR):
-                item_path = os.path.join(DATA_FEATURES_DIR, item)
-                if os.path.isfile(item_path):
-                    if (item.startswith("features_") and item.endswith(".pkl")) or \
-                            (item.startswith("sample_") and item.endswith(".csv")):
-                        try:
-                            os.remove(item_path)
-                            # print(f"    Удален файл: {item_path}") # Можно раскомментировать для детального лога
-                            cleaned_feature_files += 1
-                        except Exception as e:
-                            print(f"    Не удалось удалить файл {item_path}: {e}")
+            try:
+                for item in os.listdir(DATA_FEATURES_DIR):
+                    item_path = os.path.join(DATA_FEATURES_DIR, item)
+                    if os.path.isfile(item_path):
+                        if (item.startswith("features_") and item.endswith(".pkl")) or \
+                                (item.startswith("sample_") and item.endswith(".csv")):
+                            try:
+                                os.remove(item_path)
+                                # print(f"    Удален файл: {item_path}") # Можно раскомментировать для детального лога
+                                cleaned_feature_files += 1
+                            except Exception as e:
+                                print(f"    Не удалось удалить файл {item_path}: {e}")
+            except Exception as e:
+                 print(f"    Ошибка при сканировании директории {DATA_FEATURES_DIR}: {e}")
+
             if cleaned_feature_files > 0:
                 print(f"    Удалено {cleaned_feature_files} файлов признаков/сэмплов из '{DATA_FEATURES_DIR}'.")
             else:
@@ -138,10 +155,9 @@ def ensure_base_directories():
         if not os.path.exists(dir_path):
             os.makedirs(dir_path)
             print(f"  Создана директория: {dir_path}")
-        else:
-            print(f"  Директория существует: {dir_path}")
+        # else: # Можно закомментировать, чтобы не выводить для существующих папок
+        #     print(f"  Директория существует: {dir_path}")
     print("Проверка директорий завершена.")
-
 
 # --- Главное меню ---
 def main_menu():
@@ -158,122 +174,170 @@ def main_menu():
         print("--- 🚀 Пайплайны (Комбинированные операции) ---")
         print("  5. Пайплайн: Мини-обновление -> Признаки -> Обучение (для выбранных TF)")
         print("  6. Пайплайн: Полное обновление -> Признаки -> Обучение (для выбранных TF)")
-        print("  7. ПОЛНЫЙ ПЕРЕСБОР: Очистка -> Полное обновление -> Признаки -> Обучение")  # Новый пункт
+        print("  7. ПОЛНЫЙ ПЕРЕСБОР: Очистка -> Полное обновление -> Признаки -> Обучение")
         print("--- 📊 Прогнозирование и Анализ ---")
-        print("  8. Сгенерировать прогнозы и торговый план (predict_all --save)")  # Было 7
-        print("  9. Запустить бэктест для одного таймфрейма (predict_backtest)")  # Было 8
+        print("  8. Сгенерировать прогнозы и торговый план (predict_all --save)")
+        print("  9. Запустить бэктест для одного таймфрейма (predict_backtest)")
         print("--- 🛠️  Утилиты ---")
-        print(" 10. Проверить доступность GPU для CatBoost (gpu_test)")  # Было 9
-        print(" 11. ОЧИСТИТЬ все артефакты обучения (модели, логи, features)")  # Было 10
+        print(" 10. Проверить доступность GPU для CatBoost (gpu_test)")
+        print(" 11. ОЧИСТИТЬ все артефакты обучения (модели, логи, features)")
         print("  0. Выход")
 
         choice = input("Введите номер опции: ").strip()
 
         try:
             if choice == '1':
+                # Полная загрузка данных - обычно без фильтров по символам
                 run_script([PYTHON_EXECUTABLE, "old_update_binance_data.py", "--all"], "Полная загрузка данных")
 
             elif choice == '2':
+                # Инкрементальное обновление - может быть с фильтрами, но в этом меню пока без них
                 tfs = select_timeframes_interactive("Инкрементальное обновление")
                 if tfs:
-                    run_script([PYTHON_EXECUTABLE, "mini_update_binance_data.py", "--tf"] + tfs,
+                     # Здесь можно было бы добавить запрос символа/группы, но оставим пока как в оригинале
+                     run_script([PYTHON_EXECUTABLE, "mini_update_binance_data.py", "--tf"] + tfs,
                                f"Инкрементальное обновление для {', '.join(tfs)}")
 
             elif choice == '3':
                 tfs = select_timeframes_interactive("Построение признаков")
                 if tfs:
-                    group_or_symbol = input("Введите группу (например: top8) или символ (например: BTCUSDT), или оставьте пустым для всех: ").strip()
-                    group_args = []
+                    # >>> ИЗМЕНЕНО согласно патчу
+                    group_or_symbol = input(
+                        f"Введите группу ({'/'.join(SYMBOL_GROUPS)}) или символ (например: BTCUSDT),\n"
+                        "или оставьте пустым для всех: "
+                    ).strip()
+                    group_args = [] # Переименовано в group_args для соответствия патчу, хотя может быть и symbol
+                    description_suffix = "для всех"
                     if group_or_symbol:
-                        if group_or_symbol.lower() in ['top8', 'meme', 'defi']:
+                        if group_or_symbol.lower() in SYMBOL_GROUPS:
                             group_args = ["--symbol-group", group_or_symbol.lower()]
+                            description_suffix = f"для группы {group_or_symbol.lower()}"
                         else:
                             group_args = ["--symbol", group_or_symbol.upper()]
+                            description_suffix = f"для символа {group_or_symbol.upper()}"
 
                     for tf_item in tfs:
-                        print(f"\n--- Построение признаков для {group_or_symbol or 'всех'} ({tf_item}) ---")
-                        if run_script(
-                            [PYTHON_EXECUTABLE, "preprocess_features.py", "--tf", tf_item] + group_args,
-                            f"Признаки для {tf_item} ({group_or_symbol or 'все'})"
-                        ) != 0:
-                            print(f"Построение признаков для {tf_item} прервано. Пропуск остальных.")
-                            break
+                        desc = f"Построение признаков {description_suffix} ({tf_item})"
+                        print(f"\n--- {desc} ---")
+                        if run_script([PYTHON_EXECUTABLE, "preprocess_features.py", "--tf", tf_item] + group_args, desc) != 0:
+                            print(f"{desc} прервано или завершилось с ошибкой. Пропуск остальных таймфреймов.")
+                            break # Прерываем цикл по таймфреймам
 
-                    for tf_item in tfs:
-                        print(f"\n--- Построение признаков для {tf_item} ---")
-                        if run_script([PYTHON_EXECUTABLE, "preprocess_features.py", "--tf", tf_item],
-                                      f"Признаки для {tf_item}") != 0:
-                            print(
-                                f"Построение признаков для {tf_item} прервано или завершилось с ошибкой. Пропуск остальных.")
-                            break
             elif choice == '4':
                 tfs = select_timeframes_interactive("Обучение моделей")
                 if tfs:
-                    group_or_symbol = input("Введите символ (например: BTCUSDT), группу (например: top8), или оставьте пустым для всех: ").strip()
-                    symbol_arg = ["--symbol", group_or_symbol] if group_or_symbol else []
+                    # >>> ИЗМЕНЕНО согласно патчу
+                    group_or_symbol = input(
+                        f"Введите группу ({'/'.join(SYMBOL_GROUPS)}) или символ (например: BTCUSDT),\n"
+                        "или оставьте пустым для всех: "
+                    ).strip()
+                    symbol_arg = [] # Переименовано в symbol_arg для соответствия патчу, хотя может быть и group
+                    description_suffix = "для всех пар"
+                    if group_or_symbol:
+                         if group_or_symbol.lower() in SYMBOL_GROUPS:
+                             symbol_arg = ["--symbol-group", group_or_symbol.lower()]
+                             description_suffix = f"для группы {group_or_symbol.lower()}"
+                         else:
+                             symbol_arg = ["--symbol", group_or_symbol.upper()]
+                             description_suffix = f"для символа {group_or_symbol.upper()}"
+
 
                     for tf_item in tfs:
-                        desc = f"Обучение для {group_or_symbol or 'всех пар'} ({tf_item})"
+                        desc = f"Обучение {description_suffix} ({tf_item})"
                         if run_script([PYTHON_EXECUTABLE, "train_model.py", "--tf", tf_item] + symbol_arg, desc) != 0:
-                            print(f"{desc} прервано или завершилось с ошибкой. Пропуск остальных.")
-                            break
+                            print(f"{desc} прервано или завершилось с ошибкой. Пропуск остальных таймфреймов.")
+                            break # Прерываем цикл по таймфреймам
+
 
             elif choice == '5':
                 tfs = select_timeframes_interactive("Пайплайн: Мини-обновление -> Признаки -> Обучение")
                 if tfs:
-                    run_script([PYTHON_EXECUTABLE, "pipeline.py", "--train", "--skip-predict", "--tf"] + tfs,
+                     # Пайплайны пока без фильтров по символам в этом меню, но train_model и preprocess_features
+                     # внутри пайплайна могли бы их использовать, если бы пайплайн их принимал.
+                     # Текущий pipeline.py их не принимает, оставляем как есть.
+                     run_script([PYTHON_EXECUTABLE, "pipeline.py", "--train", "--skip-predict", "--tf"] + tfs,
                                "Пайплайн (мини-обновление, признаки, обучение)")
             elif choice == '6':
                 tfs = select_timeframes_interactive("Пайплайн: Полное обновление -> Признаки -> Обучение")
                 if tfs:
+                     # Пайплайны пока без фильтров по символам
                     run_script(
                         [PYTHON_EXECUTABLE, "pipeline.py", "--full-update", "--train", "--skip-predict", "--tf"] + tfs,
                         "Пайплайн (полное обновление, признаки, обучение)")
 
-            elif choice == '7':  # Новый пункт - ПОЛНЫЙ ПЕРЕСБОР
+            elif choice == '7':
                 tfs = select_timeframes_interactive(
                     "ПОЛНЫЙ ПЕРЕСБОР: Очистка -> Полное обновление -> Признаки -> Обучение")
                 if tfs:
                     print_header("Начало ПОЛНОГО ПЕРЕСБОРА")
-                    clear_training_artifacts_interactive()  # 1. Очистка
-                    # 2. Полное обновление (через pipeline с флагом full-update, но без train на этом этапе)
-                    if run_script([PYTHON_EXECUTABLE, "pipeline.py", "--full-update", "--skip-predict", "--tf"] + tfs,
-                                  "Этап 1/2 (Полный пересбор): Полное обновление и Построение признаков") == 0:
-                        # 3. Обучение (запускаем train_model.py отдельно для выбранных ТФ)
-                        print_header("Этап 2/2 (Полный пересбор): Обучение моделей")
-                        for tf_item in tfs:
-                            if run_script([PYTHON_EXECUTABLE, "train_model.py", "--tf", tf_item],
-                                          f"Обучение для {tf_item}") != 0:
-                                print(
-                                    f"Обучение для {tf_item} (в рамках полного пересбора) прервано. Пропуск остальных.")
-                                break
+                    # Очистка
+                    clear_training_artifacts_interactive()
+                    # Полное обновление и Построение признаков (через pipeline)
+                    # Пайплайн predict_all.py не запускает, только preprocess и train (если указано)
+                    # Пайплайн train_model может принимать --symbol/--symbol-group, но текущий pipeline.py не передает эти флаги.
+                    # Для полного пересбора, вероятно, мы всегда хотим обработать ВСЕ символы, так что фильтр не нужен.
+                    if run_script([PYTHON_EXECUTABLE, "pipeline.py", "--full-update", "--train", "--skip-predict", "--tf"] + tfs,
+                                  "Этап 1/1 (Полный пересбор): Обновление, Признаки, Обучение") == 0:
+                        print_header("ПОЛНЫЙ ПЕРЕСБОР завершен успешно.")
                     else:
-                        print("Полный пересбор прерван на этапе обновления/построения признаков.")
-
+                         print("ПОЛНЫЙ ПЕРЕСБОР прерван на одном из этапов.")
 
             elif choice == '8':
-                print_header("Генерация прогнозов")
-                symbol_input = input("Введите символ (например: BTCUSDT) или оставьте пустым для всех: ").strip().upper()
-                symbol_args = ["--symbol", symbol_input] if symbol_input else []
 
-                run_script([PYTHON_EXECUTABLE, "predict_all.py", "--save"] + symbol_args, f"Генерация прогнозов для {symbol_input or 'всех пар'}")
+            print_header("Генерация прогнозов")
 
-            elif choice == '9':  # Было 8
+
+
+
+
+                            +    group_or_symbol = input(
+
+                                +        "Введите группу (top8/meme/defi) или символ (например: BTCUSDT),\n"
+
+
+                                +).strip()
+
+                            +    predict_args = ["--save"]
+
+                            +
+                            if group_or_symbol:
+
+                            +
+                            if group_or_symbol.lower() in SYMBOL_GROUPS:
+
+                            +            predict_args += ["--symbol-group", group_or_symbol.lower()]
+
+                            + else:
+
+            +            predict_args += ["--symbol", group_or_symbol.upper()]
+
+            run_script(
+
+                + [PYTHON_EXECUTABLE, "predict_all.py"] + predict_args,
+
+                +        f"Генерация прогнозов для {group_or_symbol or 'всех пар'}"
+
+            )
+
+            elif choice == '9':
                 print_header("Запуск бэктеста")
                 print("Доступные таймфреймы:", ", ".join(CORE_TIMEFRAMES_LIST))
                 tf_backtest = input(f"Введите таймфрейм для бэктеста (например, 15m) или 'q' для отмены: ").strip()
                 if tf_backtest.lower() == 'q':
                     continue
                 if tf_backtest in CORE_TIMEFRAMES_LIST:
+                     # Бэктест predict_backtest.py может принимать --symbol/--symbol-group
+                     # Можно добавить запрос здесь, если требуется фильтрация бэктеста.
+                     # Оставляем пока без фильтрации как в оригинале.
                     run_script([PYTHON_EXECUTABLE, "predict_backtest.py", "--tf", tf_backtest],
                                f"Бэктест для {tf_backtest}")
                 else:
                     print(f"Некорректный таймфрейм: {tf_backtest}")
 
-            elif choice == '10':  # Было 9
+            elif choice == '10':
                 run_script([PYTHON_EXECUTABLE, "gpu_test.py"], "Проверка GPU")
 
-            elif choice == '11':  # Было 10
+            elif choice == '11':
                 clear_training_artifacts_interactive()
 
             elif choice == '0':
@@ -285,7 +349,16 @@ def main_menu():
 
         except KeyboardInterrupt:
             print("\nОперация прервана пользователем (Ctrl+C в меню). Возврат в главное меню.")
+            # Дочерние процессы, запущенные через subprocess.run, должны получить сигнал и корректно завершиться
+            # Но если они зависнут, может потребоваться ручное завершение.
             continue
+        except Exception as e:
+            print(f"\nКритическая ошибка в main_cli: {e}")
+            import traceback
+            traceback.print_exc()
+            # Можно не выходить, а вернуться в меню, если ошибка не фатальна
+            # sys.exit(1)
+            continue # Вернуться в меню после ошибки
 
 
 if __name__ == "__main__":
@@ -295,8 +368,7 @@ if __name__ == "__main__":
         print("\nПрограмма завершена пользователем (Ctrl+C).")
         sys.exit(0)
     except Exception as e:
-        print(f"\nКритическая ошибка в main_cli: {e}")
+        print(f"\nКритическая ошибка вне меню: {e}")
         import traceback
-
         traceback.print_exc()
         sys.exit(1)
