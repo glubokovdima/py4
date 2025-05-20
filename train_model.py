@@ -1,3 +1,5 @@
+# --- START OF FILE train_model.py ---
+
 import pandas as pd
 import numpy as np
 import argparse
@@ -268,7 +270,7 @@ def _train_binary_classifier(
                   'bagging_temperature': trial.suggest_float('bagging_temperature', 0.0, 1.0),
                   'random_strength': trial.suggest_float('random_strength', 1e-9, 1.0, log=True),
                   'border_count': trial.suggest_categorical('border_count', [32, 64, 128]),
-                  'rsm': trial.suggest_float('rsm', 0.6, 0.95),  # Ограничил border_count, добавил rsm
+                  # 'rsm': trial.suggest_float('rsm', 0.6, 0.95), # <--- ИСПРАВЛЕНИЕ: Закомментировано или удалено
                   'loss_function': 'Logloss', 'eval_metric': 'F1', 'early_stopping_rounds': 50, 'random_seed': 42,
                   'task_type': 'GPU', 'devices': '0', 'verbose': 0,
                   'class_weights': class_weights_list_objective}
