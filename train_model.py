@@ -931,7 +931,7 @@ if __name__ == "__main__":
             except Exception as e:
                 logging.error(f"Ошибка создания/очистки лог-файла {current_main_log_path}: {e}")
 
-        try:
+        try: 
             train_all_models(args.tf, entity_name, args)
         except KeyboardInterrupt:
             logging.info(f"🛑 Обучение для {current_log_context_str} прервано.")
